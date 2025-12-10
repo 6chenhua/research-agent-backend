@@ -1,0 +1,8 @@
+node_modules/
+*.log
+.env
+.venv/
+temp/
+开发日志/
+需求文档/
+graphiti_quick_start.py

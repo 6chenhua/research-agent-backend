@@ -23,7 +23,16 @@ def hash_password(password: str) -> str:
         
     Returns:
         加密后的密码哈希
+        
+    Note:
+        bcrypt限制密码最多72字节，超过部分会被自动截断
     """
+    # bcrypt有72字节的限制，确保密码不超过这个长度
+    password_bytes = password.encode('utf-8')
+    if len(password_bytes) > 72:
+        # 截断到72字节
+        password = password_bytes[:72].decode('utf-8', errors='ignore')
+    
     return pwd_context.hash(password)
 
 

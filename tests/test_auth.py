@@ -74,7 +74,7 @@ class TestUserRegistration:
     
     @pytest.mark.asyncio
     async def test_register_weak_password(self, client: AsyncClient):
-        """测试弱密码"""
+        """测试弱密码（长度不足）"""
         response = await client.post(
             "/api/auth/register",
             json={
@@ -84,6 +84,25 @@ class TestUserRegistration:
             }
         )
         
+        # Pydantic 验证失败返回 422 (密码长度不足)
+        assert response.status_code == 422
+        # 422 错误的响应格式不同，是 detail 数组
+        assert response.json()["detail"]
+    
+    @pytest.mark.asyncio
+    async def test_register_password_missing_requirements(self, client: AsyncClient):
+        """测试密码不符合强度要求"""
+        # 长度够了，但缺少特殊字符、大写字母等
+        response = await client.post(
+            "/api/auth/register",
+            json={
+                "username": "testuser",
+                "email": "test@example.com",
+                "password": "weakpassword123"  # 缺少大写字母和特殊字符
+            }
+        )
+        
+        # 业务逻辑验证失败返回 400
         assert response.status_code == 400
         assert "密码" in response.json()["detail"]
 
@@ -272,7 +291,8 @@ class TestGetCurrentUser:
         """测试未提供Token"""
         response = await client.get("/api/auth/me")
         
-        assert response.status_code == 403  # Forbidden
+        # 未提供 token 应该返回 401 Unauthorized，而不是 403
+        assert response.status_code == 401
 
 
 class TestChangePassword:

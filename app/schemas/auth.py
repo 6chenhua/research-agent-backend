@@ -2,7 +2,7 @@
 认证相关的Pydantic模型
 用于API请求和响应的数据验证
 """
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional
 from datetime import datetime
 
@@ -14,6 +14,15 @@ class RegisterRequest(BaseModel):
     username: str = Field(..., min_length=2, max_length=50, description="用户名")
     email: EmailStr = Field(..., description="邮箱")
     password: str = Field(..., min_length=8, max_length=100, description="密码")
+    
+    @field_validator('password')
+    @classmethod
+    def validate_password_bytes(cls, v: str) -> str:
+        """验证密码字节长度（bcrypt限制为72字节）"""
+        password_bytes = v.encode('utf-8')
+        if len(password_bytes) > 72:
+            raise ValueError('密码不能超过72字节')
+        return v
     
     class Config:
         json_schema_extra = {
@@ -79,6 +88,15 @@ class ChangePasswordRequest(BaseModel):
     """修改密码请求"""
     old_password: str = Field(..., description="旧密码")
     new_password: str = Field(..., min_length=8, max_length=100, description="新密码")
+    
+    @field_validator('new_password')
+    @classmethod
+    def validate_password_bytes(cls, v: str) -> str:
+        """验证密码字节长度（bcrypt限制为72字节）"""
+        password_bytes = v.encode('utf-8')
+        if len(password_bytes) > 72:
+            raise ValueError('密码不能超过72字节')
+        return v
 
 
 class ChangePasswordResponse(BaseModel):

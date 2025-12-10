@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     
     # OpenAI配置
+    LLM_BASE_URL: str
     OPENAI_API_KEY: str
     OPENAI_MODEL: str = "gpt-4-turbo"
     

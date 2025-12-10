@@ -2,14 +2,16 @@
 Pytest配置和共享fixtures
 """
 import pytest
+import pytest_asyncio
 import asyncio
 from typing import AsyncGenerator, Generator
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.pool import NullPool
-from httpx import AsyncClient
+from httpx import AsyncClient, ASGITransport
 
 from app.core.database import Base, get_session
 from app.core.config import settings
+from app.core.redis_client import close_redis_client
 from main import app
 
 
@@ -17,15 +19,16 @@ from main import app
 TEST_DATABASE_URL = f"mysql+aiomysql://{settings.MYSQL_USER}:{settings.MYSQL_PASSWORD}@{settings.MYSQL_HOST}:{settings.MYSQL_PORT}/test_research_agent"
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="function")
 def event_loop() -> Generator:
-    """创建事件循环"""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
+    """创建事件循环（每个测试独立）"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     yield loop
     loop.close()
 
 
-@pytest.fixture(scope="function")
+@pytest_asyncio.fixture(scope="function")
 async def test_engine():
     """创建测试数据库引擎"""
     engine = create_async_engine(
@@ -48,7 +51,7 @@ async def test_engine():
     await engine.dispose()
 
 
-@pytest.fixture(scope="function")
+@pytest_asyncio.fixture(scope="function")
 async def test_session(test_engine) -> AsyncGenerator[AsyncSession, None]:
     """创建测试数据库会话"""
     async_session_maker = async_sessionmaker(
@@ -61,7 +64,7 @@ async def test_session(test_engine) -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
-@pytest.fixture(scope="function")
+@pytest_asyncio.fixture(scope="function")
 async def client(test_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
     """创建测试HTTP客户端"""
     
@@ -70,8 +73,15 @@ async def client(test_session: AsyncSession) -> AsyncGenerator[AsyncClient, None
     
     app.dependency_overrides[get_session] = override_get_session
     
-    async with AsyncClient(app=app, base_url="http://test") as ac:
+    # httpx 0.24+ 需要使用 ASGITransport
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test"
+    ) as ac:
         yield ac
     
     app.dependency_overrides.clear()
+    
+    # 清理 Redis 连接，避免事件循环问题
+    await close_redis_client()
 
