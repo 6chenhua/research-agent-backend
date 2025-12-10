@@ -25,8 +25,18 @@ RELATION_TYPES = [
     "CITES",
     "USES_METRIC",
     "AUTHORED_BY",
+    "AFFILIATED_WITH",
+    "HAS_CONCEPT",
 ]
 
 # 搜索配置
 DEFAULT_SEARCH_LIMIT = 10
 SEARCH_THRESHOLD = 0.5
+
+# 重排序模式
+RERANK_MODES = ["rrf", "mmr", "cross_encoder", "node_distance"]
+
+# 路径查询配置
+MAX_PATH_LENGTH = 5
+MAX_PATHS = 10
+PATH_TIMEOUT = 5  # seconds
