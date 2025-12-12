@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>知识图谱交互示例</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f4f6f8;
+        }
+
+        /* 整个画布容器 */
+        #graph-container {
+            width: 100vw;
+            height: 100vh;
+            cursor: grab;
+        }
+
+        #graph-container:active {
+            cursor: grabbing;
+        }
+
+        /* 信息面板样式 */
+        #info-panel {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            width: 300px;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            display: none; /* 默认隐藏 */
+            z-index: 10;
+            transition: opacity 0.3s;
+        }
+
+        #info-panel h3 {
+            margin-top: 0;
+            color: #333;
+            border-bottom: 2px solid #007bff;
+            padding-bottom: 10px;
+        }
+
+        #info-panel p {
+            color: #666;
+            margin: 8px 0;
+            line-height: 1.5;
+        }
+
+        .highlight {
+            font-weight: bold;
+            color: #007bff;
+        }
+
+        /* SVG 元素样式 */
+        .node circle {
+            stroke: #fff;
+            stroke-width: 2px;
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+
+        .node:hover circle {
+            stroke: #333;
+            stroke-width: 3px;
+            r: 25; /* 鼠标悬停变大 */
+        }
+
+        .node text {
+            font-size: 12px;
+            pointer-events: none; /* 让文字不阻挡鼠标点击圆圈 */
+            text-anchor: middle;
+            fill: #333;
+            text-shadow: 0 1px 0 #fff, 1px 0 0 #fff, 0 -1px 0 #fff, -1px 0 0 #fff;
+        }
+
+        .link {
+            stroke: #999;
+            stroke-opacity: 0.6;
+            stroke-width: 2px;
+            cursor: pointer;
+            transition: stroke-width 0.2s;
+        }
+
+        .link:hover {
+            stroke: #ff6b6b; /* 悬停变色 */
+            stroke-width: 4px; /* 悬停变粗 */
+            stroke-opacity: 1;
+        }
+
+        /* 选中状态 */
+        .selected {
+            stroke: #ff6b6b !important;
+            stroke-width: 4px !important;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="info-panel">
+        <h3 id="info-title">标题</h3>
+        <div id="info-content">点击节点或连线查看详情</div>
+    </div>
+
+    <div id="graph-container"></div>
+
+    <script>
+        // 1. 准备数据
+        // 节点数据 (nodes) 和 关系数据 (links)
+        const data = {
+            nodes: [
+                { id: "刘备", group: 1, info: "蜀汉开国皇帝，字玄德。" },
+                { id: "关羽", group: 1, info: "蜀汉名将，五虎上将之首。" },
+                { id: "张飞", group: 1, info: "蜀汉名将，性格豪爽。" },
+                { id: "诸葛亮", group: 1, info: "蜀汉丞相，杰出的政治家、军事家。" },
+                { id: "曹操", group: 2, info: "魏武帝，东汉末年杰出的政治家。" },
+                { id: "孙权", group: 3, info: "吴大帝，东吴建立者。" },
+                { id: "周瑜", group: 3, info: "东吴大都督，赤壁之战主帅。" }
+            ],
+            links: [
+                { source: "刘备", target: "关羽", relation: "义结金兰", detail: "桃园三结义" },
+                { source: "刘备", target: "张飞", relation: "义结金兰", detail: "桃园三结义" },
+                { source: "关羽", target: "张飞", relation: "义兄弟", detail: "共同追随刘备" },
+                { source: "刘备", target: "诸葛亮", relation: "君臣", detail: "三顾茅庐" },
+                { source: "刘备", target: "曹操", relation: "敌对", detail: "汉中之战" },
+                { source: "曹操", target: "孙权", relation: "敌对", detail: "赤壁之战" },
+                { source: "孙权", target: "刘备", relation: "联盟/敌对", detail: "夷陵之战" },
+                { source: "孙权", target: "周瑜", relation: "君臣", detail: "托孤重臣" }
+            ]
+        };
+
+        // 2. 设置画布尺寸
+        const width = window.innerWidth;
+        const height = window.innerHeight;
+
+        // 3. 定义颜色生成器 (根据 group 属性)
+        const color = d3.scaleOrdinal(d3.schemeCategory10);
+
+        // 4. 初始化 SVG
+        const svg = d3.select("#graph-container")
+            .append("svg")
+            .attr("width", width)
+            .attr("height", height)
+            .attr("viewBox", [0, 0, width, height]);
+
+        // 5. 添加一个组(g)来容纳所有图元，以便整体缩放
+        const g = svg.append("g");
+
+        // 6. 初始化缩放 (Zoom) 行为
+        const zoom = d3.zoom()
+            .scaleExtent([0.1, 4]) // 缩放范围：0.1倍 到 4倍
+            .on("zoom", (event) => {
+                g.attr("transform", event.transform);
+            });
+
+        // 应用缩放行为到 svg 上
+        svg.call(zoom);
+
+        // 7. 初始化力导向模拟器 (Simulation)
+        const simulation = d3.forceSimulation(data.nodes)
+            .force("link", d3.forceLink(data.links).id(d => d.id).distance(150)) // 连接力，距离设为150
+            .force("charge", d3.forceManyBody().strength(-500)) // 排斥力，负值越大排斥越强
+            .force("center", d3.forceCenter(width / 2, height / 2)) // 向心力，保持在画面中心
+            .force("collide", d3.forceCollide().radius(50)); // 碰撞力，防止节点重叠
+
+        // 8. 定义箭头 (Marker) - 用于展示连线方向
+        svg.append("defs").selectAll("marker")
+            .data(["end"])
+            .enter().append("marker")
+            .attr("id", "arrow")
+            .attr("viewBox", "0 -5 10 10")
+            .attr("refX", 30) // 箭头在连线末端的偏移量（考虑到节点半径）
+            .attr("refY", 0)
+            .attr("markerWidth", 6)
+            .attr("markerHeight", 6)
+            .attr("orient", "auto")
+            .append("path")
+            .attr("d", "M0,-5L10,0L0,5")
+            .attr("fill", "#999");
+
+        // 9. 绘制连线
+        const link = g.append("g")
+            .attr("stroke", "#999")
+            .selectAll("line")
+            .data(data.links)
+            .join("line")
+            .attr("class", "link")
+            .attr("marker-end", "url(#arrow)") // 添加箭头
+            .on("click", handleLinkClick); // 点击事件
+
+        // 10. 绘制连线上的文字
+        const linkText = g.append("g")
+            .selectAll("text")
+            .data(data.links)
+            .join("text")
+            .text(d => d.relation)
+            .attr("font-size", 10)
+            .attr("fill", "#666")
+            .attr("text-anchor", "middle")
+            .attr("dy", -5); // 稍微向上偏移
+
+        // 11. 绘制节点
+        const node = g.append("g")
+            .selectAll(".node")
+            .data(data.nodes)
+            .join("g")
+            .attr("class", "node")
+            .call(d3.drag() // 启用拖拽
+                .on("start", dragstarted)
+                .on("drag", dragged)
+                .on("end", dragended))
+            .on("click", handleNodeClick); // 点击事件
+
+        // 节点画圆
+        node.append("circle")
+            .attr("r", 20)
+            .attr("fill", d => color(d.group));
+
+        // 节点加文字
+        node.append("text")
+            .attr("dy", 35) // 文字在圆圈下方
+            .text(d => d.id);
+
+        // 12. 模拟器的 tick 事件 (每一帧更新位置)
+        simulation.on("tick", () => {
+            link
+                .attr("x1", d => d.source.x)
+                .attr("y1", d => d.source.y)
+                .attr("x2", d => d.target.x)
+                .attr("y2", d => d.target.y);
+
+            linkText
+                .attr("x", d => (d.source.x + d.target.x) / 2)
+                .attr("y", d => (d.source.y + d.target.y) / 2);
+
+            node
+                .attr("transform", d => `translate(${d.x},${d.y})`);
+        });
+
+        // --- 交互处理函数 ---
+
+        const infoPanel = document.getElementById('info-panel');
+        const infoTitle = document.getElementById('info-title');
+        const infoContent = document.getElementById('info-content');
+
+        // 处理节点点击
+        function handleNodeClick(event, d) {
+            event.stopPropagation(); // 阻止事件冒泡
+            resetSelection();
+
+            // 高亮当前节点
+            d3.select(this).select("circle").style("stroke", "#000").style("stroke-width", "4px");
+
+            showPanel(d.id, `
+                <p><span class="highlight">身份:</span> ${d.group === 1 ? '蜀汉' : (d.group === 2 ? '曹魏' : '东吴')}</p>
+                <p><span class="highlight">描述:</span> ${d.info}</p>
+            `);
+        }
+
+        // 处理连线点击
+        function handleLinkClick(event, d) {
+            event.stopPropagation();
+            resetSelection();
+
+            // 高亮连线
+            d3.select(this).style("stroke", "#ff6b6b").style("stroke-width", "4px").style("stroke-opacity", "1");
+
+            showPanel(`${d.source.id} & ${d.target.id}`, `
+                <p><span class="highlight">关系:</span> ${d.relation}</p>
+                <p><span class="highlight">详情:</span> ${d.detail}</p>
+            `);
+        }
+
+        // 显示面板
+        function showPanel(title, htmlContent) {
+            infoPanel.style.display = "block";
+            infoPanel.style.opacity = "1";
+            infoTitle.innerText = title;
+            infoContent.innerHTML = htmlContent;
+        }
+
+        // 点击空白处重置
+        svg.on("click", () => {
+            infoPanel.style.opacity = "0";
+            setTimeout(() => { infoPanel.style.display = "none"; }, 300);
+            resetSelection();
+        });
+
+        // 重置所有高亮样式
+        function resetSelection() {
+            d3.selectAll("circle").style("stroke", "#fff").style("stroke-width", "2px");
+            d3.selectAll(".link").style("stroke", "#999").style("stroke-width", "2px").style("stroke-opacity", "0.6");
+        }
+
+        // --- 拖拽函数 ---
+        function dragstarted(event, d) {
+            if (!event.active) simulation.alphaTarget(0.3).restart();
+            d.fx = d.x;
+            d.fy = d.y;
+        }
+
+        function dragged(event, d) {
+            d.fx = event.x;
+            d.fy = event.y;
+        }
+
+        function dragended(event, d) {
+            if (!event.active) simulation.alphaTarget(0);
+            d.fx = null;
+            d.fy = null;
+        }
+    </script>
+</body>
+</html>

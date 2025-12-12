@@ -1,6 +1,17 @@
 """
 Pytest配置和共享fixtures
 """
+import sys
+from unittest.mock import MagicMock
+
+# Mock tiktoken和deepdoc相关模块，避免网络请求和导入错误
+# 必须在导入main之前执行
+sys.modules['tiktoken'] = MagicMock()
+sys.modules['tiktoken.registry'] = MagicMock()
+sys.modules['tiktoken_ext'] = MagicMock()
+sys.modules['tiktoken_ext.openai_public'] = MagicMock()
+sys.modules['tiktoken.load'] = MagicMock()
+
 import pytest
 import pytest_asyncio
 import asyncio

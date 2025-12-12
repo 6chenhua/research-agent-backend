@@ -1,6 +1,7 @@
 """
 认证模块单元测试
 测试用户注册、登录、Token管理等功能
+根据PRD_认证模块.md设计
 """
 import pytest
 from httpx import AsyncClient
@@ -13,7 +14,7 @@ from app.core.redis_client import is_token_blacklisted, get_failed_login_count
 
 
 class TestUserRegistration:
-    """用户注册测试"""
+    """用户注册测试 REQ-AUTH-1"""
     
     @pytest.mark.asyncio
     async def test_register_success(self, client: AsyncClient, test_session: AsyncSession):
@@ -21,56 +22,104 @@ class TestUserRegistration:
         response = await client.post(
             "/api/auth/register",
             json={
-                "username": "testuser",
-                "email": "test@example.com",
-                "password": "TestPass123!"
+                "username": "researcher001",
+                "password": "Password123",
+                "email": "researcher@example.com"
             }
         )
         
         assert response.status_code == 201
         data = response.json()
         
-        # 验证响应数据
-        assert "user" in data
-        assert "access_token" in data
-        assert "refresh_token" in data
-        assert data["user"]["email"] == "test@example.com"
-        assert data["user"]["username"] == "testuser"
-        assert data["token_type"] == "Bearer"
+        # PRD要求：只返回 user_id, username, created_at, message
+        assert "user_id" in data
+        assert data["username"] == "researcher001"
+        assert "created_at" in data
+        assert data["message"] == "Registration successful"
+        
+        # PRD要求：注册不返回token
+        assert "access_token" not in data
+        assert "refresh_token" not in data
         
         # 验证数据库中创建了用户
         result = await test_session.execute(
-            select(User).where(User.email == "test@example.com")
+            select(User).where(User.username == "researcher001")
         )
         user = result.scalar_one_or_none()
         assert user is not None
-        assert user.username == "testuser"
+        assert user.email == "researcher@example.com"
     
     @pytest.mark.asyncio
-    async def test_register_duplicate_email(self, client: AsyncClient, test_session: AsyncSession):
-        """测试重复邮箱注册"""
+    async def test_register_without_email(self, client: AsyncClient, test_session: AsyncSession):
+        """测试不提供邮箱注册（email是可选的）"""
+        response = await client.post(
+            "/api/auth/register",
+            json={
+                "username": "testuser_no_email",
+                "password": "Password123"
+            }
+        )
+        
+        assert response.status_code == 201
+        data = response.json()
+        
+        assert "user_id" in data
+        assert data["username"] == "testuser_no_email"
+        assert data["message"] == "Registration successful"
+    
+    @pytest.mark.asyncio
+    async def test_register_duplicate_username(self, client: AsyncClient, test_session: AsyncSession):
+        """测试重复用户名注册"""
         # 第一次注册
         await client.post(
             "/api/auth/register",
             json={
-                "username": "user1",
-                "email": "duplicate@example.com",
-                "password": "TestPass123!"
+                "username": "duplicate_user",
+                "password": "Password123"
             }
         )
         
-        # 第二次注册相同邮箱
+        # 第二次注册相同用户名
         response = await client.post(
             "/api/auth/register",
             json={
-                "username": "user2",
-                "email": "duplicate@example.com",
-                "password": "TestPass456!"
+                "username": "duplicate_user",
+                "password": "Password456"
             }
         )
         
         assert response.status_code == 400
-        assert "邮箱已被注册" in response.json()["detail"]
+        data = response.json()
+        assert data["detail"]["error"] == "INVALID_INPUT"
+        assert "Username already exists" in data["detail"]["message"]
+    
+    @pytest.mark.asyncio
+    async def test_register_invalid_username(self, client: AsyncClient):
+        """测试无效用户名（含特殊字符）"""
+        response = await client.post(
+            "/api/auth/register",
+            json={
+                "username": "invalid@user",  # 包含@，不符合正则
+                "password": "Password123"
+            }
+        )
+        
+        # Pydantic 验证失败返回 422
+        assert response.status_code == 422
+    
+    @pytest.mark.asyncio
+    async def test_register_username_too_short(self, client: AsyncClient):
+        """测试用户名太短（少于3字符）"""
+        response = await client.post(
+            "/api/auth/register",
+            json={
+                "username": "ab",  # 只有2字符
+                "password": "Password123"
+            }
+        )
+        
+        # Pydantic 验证失败返回 422
+        assert response.status_code == 422
     
     @pytest.mark.asyncio
     async def test_register_weak_password(self, client: AsyncClient):
@@ -79,36 +128,56 @@ class TestUserRegistration:
             "/api/auth/register",
             json={
                 "username": "testuser",
-                "email": "test@example.com",
                 "password": "weak"
             }
         )
         
-        # Pydantic 验证失败返回 422 (密码长度不足)
+        # Pydantic 验证失败返回 422
         assert response.status_code == 422
-        # 422 错误的响应格式不同，是 detail 数组
-        assert response.json()["detail"]
     
     @pytest.mark.asyncio
-    async def test_register_password_missing_requirements(self, client: AsyncClient):
-        """测试密码不符合强度要求"""
-        # 长度够了，但缺少特殊字符、大写字母等
+    async def test_register_password_missing_uppercase(self, client: AsyncClient):
+        """测试密码缺少大写字母"""
         response = await client.post(
             "/api/auth/register",
             json={
                 "username": "testuser",
-                "email": "test@example.com",
-                "password": "weakpassword123"  # 缺少大写字母和特殊字符
+                "password": "password123"  # 缺少大写字母
             }
         )
         
-        # 业务逻辑验证失败返回 400
-        assert response.status_code == 400
-        assert "密码" in response.json()["detail"]
+        # Pydantic validator 验证失败返回 422
+        assert response.status_code == 422
+    
+    @pytest.mark.asyncio
+    async def test_register_password_missing_lowercase(self, client: AsyncClient):
+        """测试密码缺少小写字母"""
+        response = await client.post(
+            "/api/auth/register",
+            json={
+                "username": "testuser",
+                "password": "PASSWORD123"  # 缺少小写字母
+            }
+        )
+        
+        assert response.status_code == 422
+    
+    @pytest.mark.asyncio
+    async def test_register_password_missing_number(self, client: AsyncClient):
+        """测试密码缺少数字"""
+        response = await client.post(
+            "/api/auth/register",
+            json={
+                "username": "testuser",
+                "password": "PasswordOnly"  # 缺少数字
+            }
+        )
+        
+        assert response.status_code == 422
 
 
 class TestUserLogin:
-    """用户登录测试"""
+    """用户登录测试 REQ-AUTH-2"""
     
     @pytest.mark.asyncio
     async def test_login_success(self, client: AsyncClient, test_session: AsyncSession):
@@ -118,27 +187,30 @@ class TestUserLogin:
             "/api/auth/register",
             json={
                 "username": "loginuser",
-                "email": "login@example.com",
-                "password": "LoginPass123!"
+                "password": "Password123"
             }
         )
         
-        # 登录
+        # 使用用户名登录
         response = await client.post(
             "/api/auth/login",
             json={
-                "email": "login@example.com",
-                "password": "LoginPass123!"
+                "username": "loginuser",
+                "password": "Password123"
             }
         )
         
         assert response.status_code == 200
         data = response.json()
         
-        assert "user" in data
+        # PRD要求的响应结构
         assert "access_token" in data
         assert "refresh_token" in data
-        assert data["user"]["email"] == "login@example.com"
+        assert data["token_type"] == "bearer"  # 小写
+        assert data["expires_in"] == 1800  # 30分钟
+        assert "user" in data
+        assert "user_id" in data["user"]
+        assert data["user"]["username"] == "loginuser"
     
     @pytest.mark.asyncio
     async def test_login_wrong_password(self, client: AsyncClient):
@@ -147,9 +219,8 @@ class TestUserLogin:
         await client.post(
             "/api/auth/register",
             json={
-                "username": "testuser",
-                "email": "test@example.com",
-                "password": "CorrectPass123!"
+                "username": "testuser_pwd",
+                "password": "CorrectPass123"
             }
         )
         
@@ -157,13 +228,15 @@ class TestUserLogin:
         response = await client.post(
             "/api/auth/login",
             json={
-                "email": "test@example.com",
-                "password": "WrongPass123!"
+                "username": "testuser_pwd",
+                "password": "WrongPass123"
             }
         )
         
         assert response.status_code == 401
-        assert "邮箱或密码错误" in response.json()["detail"]
+        data = response.json()
+        assert data["detail"]["error"] == "INVALID_CREDENTIALS"
+        assert "Invalid username or password" in data["detail"]["message"]
     
     @pytest.mark.asyncio
     async def test_login_nonexistent_user(self, client: AsyncClient):
@@ -171,32 +244,41 @@ class TestUserLogin:
         response = await client.post(
             "/api/auth/login",
             json={
-                "email": "nonexistent@example.com",
-                "password": "SomePass123!"
+                "username": "nonexistent_user",
+                "password": "SomePass123"
             }
         )
         
         assert response.status_code == 401
-        assert "邮箱或密码错误" in response.json()["detail"]
+        data = response.json()
+        assert data["detail"]["error"] == "INVALID_CREDENTIALS"
 
 
 class TestTokenRefresh:
-    """Token刷新测试"""
+    """Token刷新测试 REQ-AUTH-3"""
     
     @pytest.mark.asyncio
     async def test_refresh_token_success(self, client: AsyncClient):
         """测试成功刷新Token"""
-        # 注册并获取refresh_token
-        register_response = await client.post(
+        # 注册
+        await client.post(
             "/api/auth/register",
             json={
                 "username": "refreshuser",
-                "email": "refresh@example.com",
-                "password": "RefreshPass123!"
+                "password": "RefreshPass123"
             }
         )
         
-        refresh_token = register_response.json()["refresh_token"]
+        # 登录获取refresh_token
+        login_response = await client.post(
+            "/api/auth/login",
+            json={
+                "username": "refreshuser",
+                "password": "RefreshPass123"
+            }
+        )
+        
+        refresh_token = login_response.json()["refresh_token"]
         
         # 刷新Token
         response = await client.post(
@@ -208,8 +290,8 @@ class TestTokenRefresh:
         data = response.json()
         
         assert "access_token" in data
-        assert data["token_type"] == "Bearer"
-        assert "expires_in" in data
+        assert data["token_type"] == "bearer"  # 小写
+        assert data["expires_in"] == 1800  # 30分钟
     
     @pytest.mark.asyncio
     async def test_refresh_with_invalid_token(self, client: AsyncClient):
@@ -220,25 +302,35 @@ class TestTokenRefresh:
         )
         
         assert response.status_code == 401
+        data = response.json()
+        assert data["detail"]["error"] == "INVALID_TOKEN"
 
 
 class TestUserLogout:
-    """用户登出测试"""
+    """用户登出测试 REQ-AUTH-5"""
     
     @pytest.mark.asyncio
     async def test_logout_success(self, client: AsyncClient):
         """测试成功登出"""
-        # 注册并获取access_token
-        register_response = await client.post(
+        # 注册
+        await client.post(
             "/api/auth/register",
             json={
                 "username": "logoutuser",
-                "email": "logout@example.com",
-                "password": "LogoutPass123!"
+                "password": "LogoutPass123"
             }
         )
         
-        access_token = register_response.json()["access_token"]
+        # 登录获取access_token
+        login_response = await client.post(
+            "/api/auth/login",
+            json={
+                "username": "logoutuser",
+                "password": "LogoutPass123"
+            }
+        )
+        
+        access_token = login_response.json()["access_token"]
         
         # 登出
         response = await client.post(
@@ -247,91 +339,60 @@ class TestUserLogout:
         )
         
         assert response.status_code == 200
-        assert response.json()["message"] == "登出成功"
+        assert response.json()["message"] == "Logged out successfully"
         
         # 验证Token已加入黑名单
         is_blacklisted = await is_token_blacklisted(access_token)
         assert is_blacklisted is True
 
 
-class TestGetCurrentUser:
-    """获取当前用户信息测试"""
-    
-    @pytest.mark.asyncio
-    async def test_get_me_success(self, client: AsyncClient):
-        """测试成功获取用户信息"""
-        # 注册
-        register_response = await client.post(
-            "/api/auth/register",
-            json={
-                "username": "meuser",
-                "email": "me@example.com",
-                "password": "MePass123!"
-            }
-        )
-        
-        access_token = register_response.json()["access_token"]
-        
-        # 获取用户信息
-        response = await client.get(
-            "/api/auth/me",
-            headers={"Authorization": f"Bearer {access_token}"}
-        )
-        
-        assert response.status_code == 200
-        data = response.json()
-        
-        assert data["email"] == "me@example.com"
-        assert data["username"] == "meuser"
-        assert "user_id" in data
-        assert "created_at" in data
-    
-    @pytest.mark.asyncio
-    async def test_get_me_without_token(self, client: AsyncClient):
-        """测试未提供Token"""
-        response = await client.get("/api/auth/me")
-        
-        # 未提供 token 应该返回 401 Unauthorized，而不是 403
-        assert response.status_code == 401
-
-
 class TestChangePassword:
-    """修改密码测试"""
+    """修改密码测试 REQ-AUTH-4"""
     
     @pytest.mark.asyncio
     async def test_change_password_success(self, client: AsyncClient, test_session: AsyncSession):
         """测试成功修改密码"""
         # 注册
-        register_response = await client.post(
+        await client.post(
             "/api/auth/register",
             json={
                 "username": "changeuser",
-                "email": "change@example.com",
-                "password": "OldPass123!"
+                "password": "OldPass123"
             }
         )
         
-        access_token = register_response.json()["access_token"]
+        # 登录获取token
+        login_response = await client.post(
+            "/api/auth/login",
+            json={
+                "username": "changeuser",
+                "password": "OldPass123"
+            }
+        )
+        
+        access_token = login_response.json()["access_token"]
         
         # 修改密码
         response = await client.post(
             "/api/auth/change-password",
             headers={"Authorization": f"Bearer {access_token}"},
             json={
-                "old_password": "OldPass123!",
-                "new_password": "NewPass456!"
+                "old_password": "OldPass123",
+                "new_password": "NewPass456"
             }
         )
         
         assert response.status_code == 200
-        assert "密码修改成功" in response.json()["message"]
+        data = response.json()
+        assert data["message"] == "Password changed successfully"
+        assert data["require_relogin"] == True
         
         # 验证可以用新密码登录
         login_response = await client.post(
             "/api/auth/login",
             json={
-                "email": "change@example.com",
-                "password": "NewPass456!"
+                "username": "changeuser",
+                "password": "NewPass456"
             }
         )
         
@@ -341,29 +402,39 @@ class TestChangePassword:
     async def test_change_password_wrong_old_password(self, client: AsyncClient):
         """测试旧密码错误"""
         # 注册
-        register_response = await client.post(
+        await client.post(
             "/api/auth/register",
             json={
-                "username": "testuser",
-                "email": "test@example.com",
-                "password": "CorrectPass123!"
+                "username": "testuser_change",
+                "password": "CorrectPass123"
             }
         )
         
-        access_token = register_response.json()["access_token"]
+        # 登录获取token
+        login_response = await client.post(
+            "/api/auth/login",
+            json={
+                "username": "testuser_change",
+                "password": "CorrectPass123"
+            }
+        )
+        
+        access_token = login_response.json()["access_token"]
         
         # 使用错误的旧密码
         response = await client.post(
             "/api/auth/change-password",
             headers={"Authorization": f"Bearer {access_token}"},
             json={
-                "old_password": "WrongPass123!",
-                "new_password": "NewPass456!"
+                "old_password": "WrongPass123",
+                "new_password": "NewPass456"
             }
         )
         
-        assert response.status_code == 400
-        assert "旧密码错误" in response.json()["detail"]
+        assert response.status_code == 401
+        data = response.json()
+        assert data["detail"]["error"] == "WRONG_PASSWORD"
+        assert "Old password is incorrect" in data["detail"]["message"]
 
 
 class TestSecurityFunctions:
@@ -371,7 +442,7 @@ class TestSecurityFunctions:
     
     def test_password_hashing(self):
         """测试密码加密"""
-        password = "TestPassword123!"
+        password = "TestPassword123"
         hashed = hash_password(password)
         
         # 验证加密后的密码不等于原密码
@@ -385,16 +456,16 @@ class TestSecurityFunctions:
         """测试JWT Token解码"""
         from app.core.security import create_access_token
         
-        token = create_access_token({
-            "sub": "test_user_id",
-            "email": "test@example.com"
-        })
+        # 新的API签名
+        token = create_access_token(
+            user_id="test_user_id",
+            username="test_username"
+        )
         
         payload = decode_token(token)
         
         assert payload is not None
-        assert payload["sub"] == "test_user_id"
-        assert payload["email"] == "test@example.com"
+        assert payload["user_id"] == "test_user_id"
+        assert payload["username"] == "test_username"
+        assert payload["type"] == "access"
         assert "exp" in payload
-        assert "iat" in payload
-

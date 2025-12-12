@@ -5,32 +5,21 @@
 from app.models.db_models import (
     # 用户相关
     User,
-    UserProfile,
-    
+
     # 聊天和历史
-    ChatHistory,
-    ReadingHistory,
+    ChatMessage,
     
     # 论文
-    PaperMetadata,
-    
-    # 任务和反馈
-    TaskStatus,
-    UserFeedback,
-    
-    # 枚举
-    UserRole,
-    ExpertiseLevel,
+    Paper,
+
+    # 会话
+    ResearchSession
+
 )
 
 __all__ = [
     "User",
-    "UserProfile",
-    "ChatHistory",
-    "ReadingHistory",
-    "PaperMetadata",
-    "TaskStatus",
-    "UserFeedback",
-    "UserRole",
-    "ExpertiseLevel",
+    "ChatMessage",
+    "Paper",
+    "ResearchSession"
 ]

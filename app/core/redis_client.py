@@ -1,6 +1,7 @@
 """
 Redis客户端管理
-用于Token黑名单、缓存等
+用于Token黑名单、登录限流等
+根据PRD_认证模块.md设计
 """
 import redis.asyncio as redis
 from typing import Optional
@@ -8,6 +9,10 @@ from app.core.config import settings
 
 # 全局Redis客户端实例
 _redis_client: Optional[redis.Redis] = None
+
+# 登录限流配置（PRD要求：15分钟内最多5次）
+LOGIN_RATE_LIMIT_WINDOW = 900  # 15分钟（秒）
+LOGIN_MAX_ATTEMPTS = 5  # 最大尝试次数
 
 
 async def get_redis_client() -> redis.Redis:
@@ -73,53 +78,68 @@ async def is_token_blacklisted(token: str) -> bool:
 
 # ==================== 登录失败次数管理 ====================
 
-async def increment_failed_login(email: str) -> int:
+async def increment_failed_login(username: str) -> int:
     """
     增加登录失败次数
+    PRD要求：15分钟内最多5次
     
     Args:
-        email: 用户邮箱
+        username: 用户名
         
     Returns:
         当前失败次数
     """
     client = await get_redis_client()
-    key = f"failed_login:{email}"
+    key = f"login_attempt:{username}"
     
     # 增加计数
     count = await client.incr(key)
     
-    # 设置5分钟过期
+    # 设置15分钟过期（仅首次设置）
     if count == 1:
-        await client.expire(key, 300)
+        await client.expire(key, LOGIN_RATE_LIMIT_WINDOW)
     
     return count
 
 
-async def reset_failed_login(email: str):
+async def reset_failed_login(username: str):
     """
     重置登录失败次数
     
     Args:
-        email: 用户邮箱
+        username: 用户名
     """
     client = await get_redis_client()
-    await client.delete(f"failed_login:{email}")
+    await client.delete(f"login_attempt:{username}")
 
 
-async def get_failed_login_count(email: str) -> int:
+async def get_failed_login_count(username: str) -> int:
     """
     获取登录失败次数
     
     Args:
-        email: 用户邮箱
+        username: 用户名
         
     Returns:
         失败次数
     """
     client = await get_redis_client()
-    count = await client.get(f"failed_login:{email}")
+    count = await client.get(f"login_attempt:{username}")
     return int(count) if count else 0
+
+
+async def check_rate_limit(username: str) -> bool:
+    """
+    检查是否超过登录限制
+    
+    Args:
+        username: 用户名
+        
+    Returns:
+        True表示可以继续尝试，False表示已超过限制
+    """
+    count = await get_failed_login_count(username)
+    return count < LOGIN_MAX_ATTEMPTS
 
 
 # ==================== 缓存管理 ====================
@@ -178,4 +198,3 @@ async def cache_exists(key: str) -> bool:
     client = await get_redis_client()
     result = await client.exists(key)
     return result > 0
-

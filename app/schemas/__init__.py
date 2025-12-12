@@ -9,14 +9,14 @@ from app.schemas.auth import (
     RegisterResponse,
     LoginRequest,
     LoginResponse,
+    LoginUserInfo,
     RefreshTokenRequest,
     RefreshTokenResponse,
     ChangePasswordRequest,
     ChangePasswordResponse,
-    UserInfo,
-    UserMeResponse,
+    LogoutResponse,
+    ErrorResponse,
     TokenPayload,
-    MessageResponse,
 )
 
 # 聊天相关
@@ -32,8 +32,13 @@ from app.schemas.paper import (
 
 # 用户相关
 from app.schemas.user import (
-    UserProfile,
-    UserInterest,
+    GraphStats,
+    ResearchStats,
+    PaperStats,
+    UserPreferences,
+    UpdateProfileRequest,
+    UserProfileResponse,
+    UpdateProfileResponse,
 )
 
 # 历史相关
@@ -42,22 +47,22 @@ from app.schemas.history import (
     ChatHistory,
 )
 
-# 图谱相关
+# 图谱相关 (PRD_图谱模块.md)
 from app.schemas.graph import (
-    GraphSearchRequest,
-    GraphSearchResponse,
+    GraphNode,
+    GraphEdge,
+    GraphStats as GraphStatsDetail,
+    UserGraphResponse,
+    NodeDetailResponse,
+    EdgeDetailResponse,
+    GraphStatsResponse,
+    GraphErrorResponse,
 )
 
 # 社区相关
 from app.schemas.community import (
     Community,
     CommunityNode,
-)
-
-# 推荐相关
-from app.schemas.recommendation import (
-    PaperRecommendation,
-    DirectionRecommendation,
 )
 
 # 图谱实体和关系
@@ -82,14 +87,14 @@ __all__ = [
     "RegisterResponse",
     "LoginRequest",
     "LoginResponse",
+    "LoginUserInfo",
     "RefreshTokenRequest",
     "RefreshTokenResponse",
     "ChangePasswordRequest",
     "ChangePasswordResponse",
-    "UserInfo",
-    "UserMeResponse",
+    "LogoutResponse",
+    "ErrorResponse",
     "TokenPayload",
-    "MessageResponse",
     
     # Chat
     "ChatRequest",
@@ -99,24 +104,31 @@ __all__ = [
     "PaperMetadata",
     
     # User
-    "UserProfile",
-    "UserInterest",
+    "GraphStats",
+    "ResearchStats",
+    "PaperStats",
+    "UserPreferences",
+    "UpdateProfileRequest",
+    "UserProfileResponse",
+    "UpdateProfileResponse",
     
     # History
     "ChatMessage",
     "ChatHistory",
     
-    # Graph
-    "GraphSearchRequest",
-    "GraphSearchResponse",
+    # Graph (PRD_图谱模块.md)
+    "GraphNode",
+    "GraphEdge",
+    "GraphStatsDetail",
+    "UserGraphResponse",
+    "NodeDetailResponse",
+    "EdgeDetailResponse",
+    "GraphStatsResponse",
+    "GraphErrorResponse",
     
     # Community
     "Community",
     "CommunityNode",
-    
-    # Recommendation
-    "PaperRecommendation",
-    "DirectionRecommendation",
     
     # Entities
     "PaperEntity",

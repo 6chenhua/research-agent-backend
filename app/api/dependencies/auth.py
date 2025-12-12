@@ -1,5 +1,6 @@
 """
 认证相关的依赖注入
+根据PRD_认证模块.md设计
 提供JWT认证中间件
 """
 from fastapi import Depends, HTTPException, status
@@ -12,7 +13,6 @@ from app.core.database import get_session
 from app.core.security import decode_token
 from app.core.redis_client import is_token_blacklisted
 from app.models.db_models import User
-from app.schemas.auth import TokenPayload
 
 # HTTP Bearer认证方案
 security = HTTPBearer()
@@ -25,6 +25,11 @@ async def get_current_user(
     """
     JWT认证依赖
     验证Token并返回当前用户对象
+    
+    根据PRD要求：
+    - access_token payload: {user_id, username, exp, type: "access"}
+    - 检查Token黑名单
+    - 验证Token类型为access
     
     Args:
         credentials: HTTP Bearer凭证
@@ -42,7 +47,10 @@ async def get_current_user(
     if await is_token_blacklisted(token):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token已被撤销",
+            detail={
+                "error": "INVALID_TOKEN",
+                "message": "Token has been revoked"
+            },
             headers={"WWW-Authenticate": "Bearer"},
         )
     
@@ -51,7 +59,10 @@ async def get_current_user(
     if payload is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="无效的认证凭证",
+            detail={
+                "error": "INVALID_TOKEN",
+                "message": "Invalid or expired token"
+            },
             headers={"WWW-Authenticate": "Bearer"},
         )
     
@@ -60,16 +71,22 @@ async def get_current_user(
     if token_type != "access":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="无效的Token类型",
+            detail={
+                "error": "INVALID_TOKEN",
+                "message": "Invalid token type"
+            },
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    # 4. 获取user_id
-    user_id: Optional[str] = payload.get("sub")
+    # 4. 获取user_id（PRD要求字段名为user_id）
+    user_id: Optional[str] = payload.get("user_id")
     if user_id is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token中缺少用户信息",
+            detail={
+                "error": "INVALID_TOKEN",
+                "message": "Invalid token"
+            },
             headers={"WWW-Authenticate": "Bearer"},
         )
     
@@ -82,65 +99,14 @@ async def get_current_user(
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="用户不存在",
+            detail={
+                "error": "INVALID_TOKEN",
+                "message": "User not found"
+            },
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    # 6. 检查用户状态
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="用户账户已被禁用"
-        )
-    
     return user
-
-
-async def get_current_active_user(
-    current_user: User = Depends(get_current_user)
-) -> User:
-    """
-    获取当前激活的用户
-    （额外的依赖层，可用于添加更多验证）
-    
-    Args:
-        current_user: 当前用户
-        
-    Returns:
-        当前用户对象
-        
-    Raises:
-        HTTPException: 用户未激活
-    """
-    if not current_user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="用户账户未激活"
-        )
-    return current_user
-
-
-async def get_current_verified_user(
-    current_user: User = Depends(get_current_user)
-) -> User:
-    """
-    获取邮箱已验证的用户
-    
-    Args:
-        current_user: 当前用户
-        
-    Returns:
-        当前用户对象
-        
-    Raises:
-        HTTPException: 邮箱未验证
-    """
-    if not current_user.is_verified:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="请先验证邮箱"
-        )
-    return current_user
 
 
 # ==================== 可选认证 ====================

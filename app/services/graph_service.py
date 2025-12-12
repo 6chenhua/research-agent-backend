@@ -1,16 +1,28 @@
-"""图谱服务
-处理所有图谱操作的业务逻辑，包括搜索、节点查询、路径查询等
 """
-import time
-from typing import List, Optional, Dict, Any, Tuple
-from app.core.graphiti_client import GraphitiClient
-from app.services.namespace_service import NamespaceService
+图谱服务
+处理所有图谱操作的业务逻辑
+
+根据 PRD_图谱模块.md 实现：
+- REQ-GRAPH-1: 获取用户图谱
+- REQ-GRAPH-2: 获取节点详情
+- REQ-GRAPH-3: 获取边详情
+- REQ-GRAPH-4: 图谱统计信息
+
+使用 Neo4j 异步驱动直接查询图数据库
+通过 group_id = user_id 实现命名空间隔离
+"""
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional, Any
+from neo4j import AsyncGraphDatabase, AsyncDriver
+from neo4j.exceptions import Neo4jError
+
 from app.schemas.graph import (
-    GraphSearchRequest, GraphSearchResponse, SearchResult,
-    NodeDetailResponse, NeighborNode, PathQueryRequest, 
-    PathQueryResponse, Path, PathNode, PathEdge, RerankMode
+    UserGraphResponse, GraphNode, GraphEdge, GraphStats,
+    NodeDetailResponse, NodeProperties, NeighborNode, NodeRelation, SourceEpisode,
+    EdgeDetailResponse, EdgeNodeInfo, EdgeProperties,
+    GraphStatsResponse, GraphStatistics, TopEntity, GrowthStats,
 )
-from app.core.constants import DEFAULT_SEARCH_LIMIT, MAX_PATH_LENGTH, MAX_PATHS
+from app.core.config import settings
 import logging
 
 logger = logging.getLogger(__name__)
@@ -20,386 +32,605 @@ class GraphService:
     """图谱操作服务
     
     提供知识图谱的核心功能：
-    - 混合搜索（语义+BM25）
-    - 双图谱Fallback机制
-    - 多种重排模式
-    - 节点查询
-    - 路径查询
+    - 获取用户图谱（REQ-GRAPH-1）
+    - 获取节点详情（REQ-GRAPH-2）
+    - 获取边详情（REQ-GRAPH-3）
+    - 图谱统计信息（REQ-GRAPH-4）
+    
+    使用 Neo4j 异步驱动直接查询图数据库
+    通过 group_id = user_id 确保命名空间隔离
     """
 
-    def __init__(self):
-        self.graph = GraphitiClient()
-        self.namespace_service = NamespaceService()
-
-    async def search(self, req: GraphSearchRequest) -> GraphSearchResponse:
-        """执行图谱搜索
-        
-        支持混合搜索、双图谱Fallback、多种重排模式
+    def __init__(self, driver: Optional[AsyncDriver] = None):
+        """初始化服务
         
         Args:
-            req: 搜索请求
-            
-        Returns:
-            GraphSearchResponse: 搜索结果
+            driver: Neo4j 异步驱动，如果不提供则懒加载创建
         """
-        start_time = time.time()
-        fallback_triggered = False
-        
-        try:
-            # 1. 首先在指定命名空间搜索
-            results = await self._search_in_namespace(
-                req.query, 
-                req.group_id, 
-                req.limit,
-                req.center_node_uuid
-            )
-            
-            # 2. 如果结果不足且启用了Fallback，尝试全局搜索
-            if len(results) < req.limit and req.enable_fallback and req.group_id != "global":
-                logger.info(f"Triggering fallback search for query: {req.query}")
-                global_results = await self._search_in_namespace(
-                    req.query, 
-                    "global", 
-                    req.limit - len(results),
-                    None
-                )
-                results.extend(global_results)
-                fallback_triggered = True
-            
-            # 3. 应用重排序（如果指定）
-            if req.rerank_mode:
-                results = await self._rerank_results(
-                    results, 
-                    req.rerank_mode, 
-                    req.query,
-                    req.center_node_uuid,
-                    req.max_distance
-                )
-            
-            # 4. 转换为响应格式
-            search_results = [self._convert_to_search_result(r) for r in results[:req.limit]]
-            
-            search_time_ms = (time.time() - start_time) * 1000
-            
-            return GraphSearchResponse(
-                results=search_results,
-                total=len(search_results),
-                query=req.query,
-                rerank_mode=req.rerank_mode if req.rerank_mode else None,  # 已经是字符串，不需要.value
-                search_time_ms=search_time_ms,
-                fallback_triggered=fallback_triggered
-            )
-            
-        except Exception as e:
-            logger.error(f"Search error: {str(e)}")
-            return GraphSearchResponse(
-                results=[],
-                total=0,
-                query=req.query,
-                search_time_ms=(time.time() - start_time) * 1000
-            )
+        self._driver = driver
+        self._owns_driver = driver is None  # 是否由本服务创建驱动（决定是否需要关闭）
 
-    async def _search_in_namespace(
-        self, 
-        query: str, 
-        group_id: Optional[str], 
-        limit: int,
-        center_node_uuid: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
-        """在指定命名空间中搜索"""
-        try:
-            results = await self.graph.search(
-                query=query, 
-                group_id=group_id,
-                focal_node_uuid=center_node_uuid
+    async def _get_driver(self) -> AsyncDriver:
+        """获取 Neo4j 异步驱动（懒加载）"""
+        if self._driver is None:
+            self._driver = AsyncGraphDatabase.driver(
+                settings.NEO4J_URI,
+                auth=(settings.NEO4J_USER, settings.NEO4J_PASSWORD)
             )
-            return results[:limit] if results else []
-        except Exception as e:
-            logger.error(f"Namespace search error: {str(e)}")
-            return []
+        return self._driver
 
-    async def _rerank_results(
+    async def close(self):
+        """关闭 Neo4j 驱动连接（仅当驱动由本服务创建时）"""
+        if self._driver and self._owns_driver:
+            await self._driver.close()
+            self._driver = None
+
+    # ==================== REQ-GRAPH-1: 获取用户图谱 ====================
+
+    async def get_user_graph(
         self, 
-        results: List[Dict[str, Any]], 
-        mode: RerankMode,
-        query: str,
-        center_node_uuid: Optional[str] = None,
-        max_distance: Optional[int] = None
-    ) -> List[Dict[str, Any]]:
-        """应用重排序策略
+        user_id: str,
+        include_episodes: bool = False,
+        limit: int = 1000,
+        node_types: Optional[List[str]] = None
+    ) -> UserGraphResponse:
+        """
+        获取用户的图谱数据（简化版）
         
         Args:
-            results: 原始搜索结果
-            mode: 重排模式
-            query: 查询字符串
-            center_node_uuid: 中心节点UUID（用于node_distance模式）
-            max_distance: 最大距离（用于node_distance模式）
+            user_id: 用户ID（作为 group_id 进行命名空间隔离）
+            include_episodes: 是否包含 Episode 节点，默认 false
+            limit: 最大节点数，默认 1000
+            node_types: 筛选节点类型，默认 None 表示全部
             
         Returns:
-            重排后的结果
+            UserGraphResponse: 用户图谱数据，包含节点、边和统计信息
         """
-        if not results:
-            return results
+        driver = await self._get_driver()
         
-        if mode == RerankMode.RRF:
-            return self._rerank_rrf(results)
-        elif mode == RerankMode.MMR:
-            return self._rerank_mmr(results, query)
-        elif mode == RerankMode.CROSS_ENCODER:
-            return self._rerank_cross_encoder(results, query)
-        elif mode == RerankMode.NODE_DISTANCE:
-            return await self._rerank_node_distance(results, center_node_uuid, max_distance)
-        else:
-            return results
-
-    def _rerank_rrf(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Reciprocal Rank Fusion重排"""
-        # RRF公式: score = 1 / (k + rank)，k通常取60
-        k = 60
-        for i, result in enumerate(results):
-            rrf_score = 1.0 / (k + i + 1)
-            result['score'] = result.get('score', 0.0) * 0.5 + rrf_score * 0.5
-        
-        return sorted(results, key=lambda x: x.get('score', 0.0), reverse=True)
-
-    def _rerank_mmr(self, results: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
-        """Maximal Marginal Relevance重排
-        
-        在保证相关性的同时增加多样性
-        """
-        # 简化的MMR实现：基于实体类型多样性
-        if not results:
-            return results
-        
-        reranked = []
-        remaining = results.copy()
-        seen_types = set()
-        
-        while remaining:
-            # 优先选择未见过类型的结果
-            best_idx = 0
-            best_score = -1
-            
-            for i, result in enumerate(remaining):
-                entity_type = result.get('entity_type', 'Unknown')
-                base_score = result.get('score', 0.0)
+        try:
+            async with driver.session() as session:
+                # 1. 构建节点标签过滤条件
+                node_labels = ["EntityNode"]
+                if include_episodes:
+                    node_labels.append("EpisodicNode")
                 
-                # 如果是新类型，给予奖励
-                diversity_bonus = 0.2 if entity_type not in seen_types else 0.0
-                final_score = base_score + diversity_bonus
+                # 如果指定了 node_types，进行筛选
+                if node_types:
+                    type_mapping = {
+                        "entity": "EntityNode",
+                        "episode": "EpisodicNode",
+                        "community": "CommunityNode"
+                    }
+                    node_labels = [
+                        type_mapping.get(t, t) 
+                        for t in node_types 
+                        if t in type_mapping
+                    ]
                 
-                if final_score > best_score:
-                    best_score = final_score
-                    best_idx = i
-            
-            # 添加最佳结果
-            selected = remaining.pop(best_idx)
-            seen_types.add(selected.get('entity_type', 'Unknown'))
-            reranked.append(selected)
-        
-        return reranked
-
-    def _rerank_cross_encoder(self, results: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
-        """Cross-Encoder重排
-        
-        注意：实际实现需要调用Graphiti的cross_encoder，这里提供基础框架
-        """
-        # TODO: 集成实际的Cross-Encoder模型
-        # 目前返回原始结果
-        logger.info("Cross-encoder reranking requested but not fully implemented")
-        return results
-
-    async def _rerank_node_distance(
-        self, 
-        results: List[Dict[str, Any]], 
-        center_node_uuid: Optional[str],
-        max_distance: Optional[int]
-    ) -> List[Dict[str, Any]]:
-        """基于节点距离重排
-        
-        离中心节点更近的结果排名更高
-        """
-        if not center_node_uuid:
-            return results
-        
-        # TODO: 实现实际的图距离计算
-        # 目前返回原始结果
-        logger.info(f"Node distance reranking from {center_node_uuid}")
-        return results
-
-    def _convert_to_search_result(self, raw_result: Dict[str, Any]) -> SearchResult:
-        """将原始结果转换为SearchResult对象"""
-        return SearchResult(
-            uuid=raw_result.get('uuid', ''),
-            name=raw_result.get('name', ''),
-            entity_type=raw_result.get('entity_type'),
-            score=raw_result.get('score', 0.0),
-            summary=raw_result.get('summary'),
-            properties=raw_result.get('properties', {}),
-            source=raw_result.get('source', 'user')
-        )
-
-    async def get_entity(self, uuid: str) -> Dict[str, Any]:
-        """获取实体详情（简单版本）
-        
-        Args:
-            uuid: 节点UUID
-            
-        Returns:
-            节点信息字典
-        """
-        try:
-            return await self.graph.client.get_node(uuid)
+                # 2. 查询节点
+                query_nodes = """
+                MATCH (n)
+                WHERE n.group_id = $user_id
+                  AND any(label IN labels(n) WHERE label IN $node_labels)
+                RETURN n, labels(n) as node_labels
+                LIMIT $limit
+                """
+                
+                result_nodes = await session.run(
+                    query_nodes,
+                    user_id=user_id,
+                    node_labels=node_labels,
+                    limit=limit
+                )
+                
+                nodes = []
+                node_uuids = set()
+                async for record in result_nodes:
+                    node = record["n"]
+                    labels = record["node_labels"]
+                    formatted_node = self._format_node(node, labels)
+                    nodes.append(formatted_node)
+                    node_uuids.add(formatted_node.uuid)
+                
+                # 3. 查询边（只查询已查出节点之间的边）
+                edges = []
+                if node_uuids:
+                    query_edges = """
+                    MATCH (source)-[r]->(target)
+                    WHERE source.group_id = $user_id
+                      AND target.group_id = $user_id
+                      AND source.uuid IN $node_uuids
+                      AND target.uuid IN $node_uuids
+                    RETURN r, source.uuid as source_uuid, target.uuid as target_uuid, type(r) as rel_type
+                    LIMIT $limit
+                    """
+                    
+                    result_edges = await session.run(
+                        query_edges,
+                        user_id=user_id,
+                        node_uuids=list(node_uuids),
+                        limit=limit
+                    )
+                    
+                    async for record in result_edges:
+                        formatted_edge = self._format_edge(record)
+                        edges.append(formatted_edge)
+                
+                # 4. 计算统计信息
+                entity_count = sum(1 for n in nodes if n.type == "entity")
+                episode_count = sum(1 for n in nodes if n.type == "episode")
+                community_count = sum(1 for n in nodes if n.type == "community")
+                
+                graph_stats = GraphStats(
+                    total_nodes=len(nodes),
+                    total_edges=len(edges),
+                    entity_count=entity_count,
+                    episode_count=episode_count,
+                    community_count=community_count
+                )
+                
+                return UserGraphResponse(
+                    user_id=user_id,
+                    graph_stats=graph_stats,
+                    nodes=nodes,
+                    edges=edges
+                )
+                
+        except Neo4jError as e:
+            logger.error(f"Neo4j error getting user graph: {str(e)}")
+            raise
         except Exception as e:
-            logger.error(f"Get entity error: {str(e)}")
+            logger.error(f"Error getting user graph: {str(e)}")
             raise
 
-    async def get_node_detail(
+    def _format_node(self, node: Any, labels: List[str]) -> GraphNode:
+        """格式化节点信息（简化版）"""
+        # 根据标签确定节点类型
+        node_type = "entity"
+        if "EpisodicNode" in labels:
+            node_type = "episode"
+        elif "CommunityNode" in labels:
+            node_type = "community"
+        
+        return GraphNode(
+            uuid=node.get("uuid", ""),
+            name=node.get("name", "Unknown"),
+            type=node_type,
+            domain=node.get("domain"),
+            created_at=self._parse_datetime(node.get("created_at"))
+        )
+
+    def _format_edge(self, record: Any) -> GraphEdge:
+        """格式化边信息（简化版）"""
+        rel = record["r"]
+        
+        return GraphEdge(
+            uuid=rel.get("uuid", ""),
+            source=record["source_uuid"],
+            target=record["target_uuid"],
+            type=record.get("rel_type", "RELATES_TO"),
+            weight=float(rel.get("weight", 1.0)),
+            created_at=self._parse_datetime(rel.get("created_at"))
+        )
+
+    # ==================== REQ-GRAPH-2: 获取节点详情 ====================
+
+    async def get_node_details(
         self, 
-        uuid: str, 
-        include_neighbors: bool = False,
-        neighbor_limit: int = 10
+        node_uuid: str,
+        user_id: str,
+        include_neighbors: bool = True,
+        neighbor_depth: int = 1,
+        include_episodes: bool = False
     ) -> NodeDetailResponse:
-        """获取节点详细信息
+        """
+        获取节点详细信息
         
         Args:
-            uuid: 节点UUID
-            include_neighbors: 是否包含邻居节点
-            neighbor_limit: 邻居节点数量限制
+            node_uuid: 节点 UUID
+            user_id: 用户 ID（用于权限校验）
+            include_neighbors: 是否包含邻居节点，默认 true
+            neighbor_depth: 邻居深度（1-3），默认 1（当前实现仅支持 1 跳）
+            include_episodes: 是否包含来源 Episodes，默认 false
             
         Returns:
             NodeDetailResponse: 节点详情
+            
+        Raises:
+            ValueError: 节点不存在
+            PermissionError: 无权访问（节点不属于该用户）
         """
+        driver = await self._get_driver()
+        
         try:
-            # 1. 获取节点基本信息
-            node = await self.graph.client.get_node(uuid)
-            
-            # 2. 如果需要，获取邻居节点
-            neighbors = None
-            neighbor_count = 0
-            
-            if include_neighbors:
-                neighbors, neighbor_count = await self._get_neighbors(uuid, neighbor_limit)
-            
-            return NodeDetailResponse(
-                uuid=node.get('uuid', uuid),
-                name=node.get('name', ''),
-                entity_type=node.get('entity_type'),
-                properties=node.get('properties', {}),
-                summary=node.get('summary'),
-                neighbors=neighbors,
-                neighbor_count=neighbor_count
-            )
-            
+            async with driver.session() as session:
+                # 1. 查询节点
+                query_node = """
+                MATCH (n {uuid: $node_uuid})
+                RETURN n, labels(n) as node_labels
+                """
+                
+                result = await session.run(query_node, node_uuid=node_uuid)
+                record = await result.single()
+                
+                if not record:
+                    raise ValueError(f"Node not found: {node_uuid}")
+                
+                node = record["n"]
+                node_labels = record["node_labels"]
+                
+                # 2. 检查权限（命名空间隔离）
+                if node.get("group_id") != user_id:
+                    raise PermissionError("Node does not belong to user")
+                
+                # 3. 确定节点类型
+                node_type = self._determine_node_type(node_labels)
+                
+                # 4. 构建节点属性
+                properties = NodeProperties(
+                    domain=node.get("domain"),
+                    summary=node.get("summary"),
+                    entity_type=node.get("entity_type"),
+                    created_at=self._parse_datetime(node.get("created_at")),
+                    updated_at=self._parse_datetime(node.get("updated_at"))
+                )
+                
+                # 5. 查询邻居节点
+                neighbors = None
+                if include_neighbors:
+                    neighbors = await self._get_node_neighbors(
+                        session, node_uuid, user_id, limit=50
+                    )
+                
+                # 6. 查询来源 Episodes（仅对 entity 类型有意义）
+                source_episodes = None
+                if include_episodes and node_type == "entity":
+                    source_episodes = await self._get_source_episodes(
+                        session, node_uuid, user_id
+                    )
+                
+                return NodeDetailResponse(
+                    uuid=node.get("uuid", node_uuid),
+                    name=node.get("name", "Unknown"),
+                    type=node_type,
+                    properties=properties,
+                    neighbors=neighbors,
+                    source_episodes=source_episodes
+                )
+                
+        except ValueError:
+            raise
+        except PermissionError:
+            raise
+        except Neo4jError as e:
+            logger.error(f"Neo4j error getting node details: {str(e)}")
+            raise
         except Exception as e:
-            logger.error(f"Get node detail error: {str(e)}")
+            logger.error(f"Error getting node details: {str(e)}")
             raise
 
-    async def _get_neighbors(
-        self, 
-        uuid: str, 
-        limit: int = 10
-    ) -> Tuple[List[NeighborNode], int]:
-        """获取节点的邻居
-        
-        Returns:
-            Tuple[List[NeighborNode], int]: (邻居列表, 总邻居数)
-        """
-        try:
-            # TODO: 实现实际的邻居查询
-            # 目前返回空列表
-            return [], 0
-        except Exception as e:
-            logger.error(f"Get neighbors error: {str(e)}")
-            return [], 0
-
-    async def get_neighbors(
+    async def _get_node_neighbors(
         self,
-        uuid: str,
-        direction: str = "both",
-        node_types: Optional[List[str]] = None,
-        relation_types: Optional[List[str]] = None,
+        session,
+        node_uuid: str,
+        user_id: str,
         limit: int = 50
-    ) -> Dict[str, Any]:
-        """获取节点的邻居（独立API）
+    ) -> List[NeighborNode]:
+        """查询节点的邻居"""
+        query = """
+        MATCH (source {uuid: $node_uuid})-[r]-(neighbor)
+        WHERE neighbor.group_id = $user_id
+        RETURN neighbor, r, labels(neighbor) as neighbor_labels,
+               CASE WHEN startNode(r).uuid = $node_uuid 
+                    THEN 'outgoing' 
+                    ELSE 'incoming' 
+               END as direction,
+               type(r) as rel_type
+        LIMIT $limit
+        """
+        
+        result = await session.run(
+            query,
+            node_uuid=node_uuid,
+            user_id=user_id,
+            limit=limit
+        )
+        
+        neighbors = []
+        async for record in result:
+            neighbor_node = record["neighbor"]
+            rel = record["r"]
+            neighbor_labels = record["neighbor_labels"]
+            
+            neighbors.append(NeighborNode(
+                uuid=neighbor_node.get("uuid", ""),
+                name=neighbor_node.get("name", "Unknown"),
+                type=self._determine_node_type(neighbor_labels),
+                relation=NodeRelation(
+                    edge_uuid=rel.get("uuid", ""),
+                    type=record.get("rel_type", "RELATES_TO"),
+                    direction=record["direction"]
+                )
+            ))
+        
+        return neighbors
+
+    async def _get_source_episodes(
+        self, 
+        session,
+        node_uuid: str,
+        user_id: str,
+        limit: int = 10
+    ) -> List[SourceEpisode]:
+        """查询实体节点的来源 Episodes"""
+        query = """
+        MATCH (entity {uuid: $node_uuid})<-[:MENTIONS]-(episode:EpisodicNode)
+        WHERE episode.group_id = $user_id
+        RETURN episode
+        ORDER BY episode.created_at DESC
+        LIMIT $limit
+        """
+        
+        result = await session.run(
+            query,
+            node_uuid=node_uuid,
+            user_id=user_id,
+            limit=limit
+        )
+        
+        episodes = []
+        async for record in result:
+            ep = record["episode"]
+            content = ep.get("content", ep.get("episode_body", ""))
+            # 截取前200字符
+            if len(content) > 200:
+                content = content[:200] + "..."
+            
+            episodes.append(SourceEpisode(
+                uuid=ep.get("uuid", ""),
+                content=content,
+                created_at=self._parse_datetime(ep.get("created_at"))
+            ))
+        
+        return episodes
+
+    # ==================== REQ-GRAPH-3: 获取边详情 ====================
+
+    async def get_edge_details(
+        self,
+        edge_uuid: str,
+        user_id: str
+    ) -> EdgeDetailResponse:
+        """
+        获取边的详细信息
         
         Args:
-            uuid: 节点UUID
-            direction: 方向（incoming/outgoing/both）
-            node_types: 筛选的节点类型
-            relation_types: 筛选的关系类型
-            limit: 返回数量限制
+            edge_uuid: 边 UUID
+            user_id: 用户 ID（用于权限校验）
             
         Returns:
-            包含邻居节点和边的字典
+            EdgeDetailResponse: 边详情
+            
+        Raises:
+            ValueError: 边不存在
+            PermissionError: 无权访问（边的源节点或目标节点不属于该用户）
         """
+        driver = await self._get_driver()
+        
         try:
-            # TODO: 实现实际的邻居查询逻辑
-            return {
-                "center_node": uuid,
-                "neighbors": {
-                    "nodes": [],
-                    "edges": []
-                },
-                "total": 0,
-                "has_more": False
-            }
+            async with driver.session() as session:
+                # 1. 查询边及其连接的节点
+                query = """
+                MATCH (source)-[r {uuid: $edge_uuid}]->(target)
+                RETURN r, source, target, 
+                       labels(source) as source_labels, 
+                       labels(target) as target_labels,
+                       type(r) as rel_type
+                """
+                
+                result = await session.run(query, edge_uuid=edge_uuid)
+                record = await result.single()
+                
+                if not record:
+                    raise ValueError(f"Edge not found: {edge_uuid}")
+                
+                rel = record["r"]
+                source_node = record["source"]
+                target_node = record["target"]
+                source_labels = record["source_labels"]
+                target_labels = record["target_labels"]
+                
+                # 2. 检查权限（源节点和目标节点都必须属于该用户）
+                if source_node.get("group_id") != user_id or target_node.get("group_id") != user_id:
+                    raise PermissionError("Edge does not belong to user")
+                
+                # 3. 构建响应
+                return EdgeDetailResponse(
+                    uuid=rel.get("uuid", edge_uuid),
+                    type=record.get("rel_type", "RELATES_TO"),
+                    source=EdgeNodeInfo(
+                        uuid=source_node.get("uuid", ""),
+                        name=source_node.get("name", "Unknown"),
+                        type=self._determine_node_type(source_labels)
+                    ),
+                    target=EdgeNodeInfo(
+                        uuid=target_node.get("uuid", ""),
+                        name=target_node.get("name", "Unknown"),
+                        type=self._determine_node_type(target_labels)
+                    ),
+                    properties=EdgeProperties(
+                        weight=float(rel.get("weight", 1.0)),
+                        description=rel.get("fact", rel.get("description", "")),
+                        created_at=self._parse_datetime(rel.get("created_at")),
+                        updated_at=self._parse_datetime(rel.get("updated_at"))
+                    ),
+                    source_episodes=None  # 可选扩展：查询生成此边的 Episode
+                )
+                
+        except ValueError:
+            raise
+        except PermissionError:
+            raise
+        except Neo4jError as e:
+            logger.error(f"Neo4j error getting edge details: {str(e)}")
+            raise
         except Exception as e:
-            logger.error(f"Get neighbors error: {str(e)}")
+            logger.error(f"Error getting edge details: {str(e)}")
             raise
 
-    async def find_paths(self, req: PathQueryRequest) -> PathQueryResponse:
-        """查找两个节点之间的路径
+    # ==================== REQ-GRAPH-4: 图谱统计信息 ====================
+
+    async def get_graph_stats(self, user_id: str) -> GraphStatsResponse:
+        """
+        获取图谱统计信息
         
         Args:
-            req: 路径查询请求
+            user_id: 用户 ID（从 Token 中获取）
             
         Returns:
-            PathQueryResponse: 路径查询结果
+            GraphStatsResponse: 图谱统计数据，包含：
+                - 总节点数、总边数
+                - 按类型统计节点数
+                - 按领域统计实体数
+                - Top 实体（按连接数排序）
+                - 最近 7 天增长趋势
         """
-        start_time = time.time()
+        driver = await self._get_driver()
         
         try:
-            # TODO: 实现实际的路径查询算法
-            # 这里提供基础框架
-            paths = await self._find_shortest_paths(
-                req.source_uuid,
-                req.target_uuid,
-                req.max_depth,
-                req.limit,
-                req.group_id
-            )
-            
-            query_time_ms = (time.time() - start_time) * 1000
-            
-            shortest_length = min([p.length for p in paths]) if paths else None
-            
-            return PathQueryResponse(
-                paths=paths,
-                total_paths=len(paths),
-                shortest_length=shortest_length,
-                query_time_ms=query_time_ms
-            )
-            
+            async with driver.session() as session:
+                # 1. 统计节点数量
+                query_nodes = """
+                MATCH (n)
+                WHERE n.group_id = $user_id
+                RETURN 
+                    count(n) as total,
+                    count(CASE WHEN 'EntityNode' IN labels(n) THEN 1 END) as entities,
+                    count(CASE WHEN 'EpisodicNode' IN labels(n) THEN 1 END) as episodes,
+                    count(CASE WHEN 'CommunityNode' IN labels(n) THEN 1 END) as communities
+                """
+                result = await session.run(query_nodes, user_id=user_id)
+                node_stats = await result.single()
+                
+                # 2. 统计边数量
+                query_edges = """
+                MATCH (source)-[r]->(target)
+                WHERE source.group_id = $user_id AND target.group_id = $user_id
+                RETURN count(r) as total_edges
+                """
+                result = await session.run(query_edges, user_id=user_id)
+                edge_stats = await result.single()
+                
+                # 3. 按 Domain 统计
+                query_domains = """
+                MATCH (n:EntityNode)
+                WHERE n.group_id = $user_id AND n.domain IS NOT NULL
+                RETURN n.domain as domain, count(n) as count
+                ORDER BY count DESC
+                """
+                result = await session.run(query_domains, user_id=user_id)
+                domains = {}
+                async for record in result:
+                    domains[record["domain"]] = record["count"]
+                
+                # 4. Top 实体（按连接数）
+                query_top = """
+                MATCH (n:EntityNode)-[r]-()
+                WHERE n.group_id = $user_id
+                WITH n, count(r) as degree
+                ORDER BY degree DESC
+                LIMIT 5
+                RETURN n.uuid as uuid, n.name as name, degree
+                """
+                result = await session.run(query_top, user_id=user_id)
+                top_entities = []
+                async for record in result:
+                    top_entities.append(TopEntity(
+                        uuid=record["uuid"] or "",
+                        name=record["name"] or "Unknown",
+                        connection_count=record["degree"]
+                    ))
+                
+                # 5. 增长趋势（最近 7 天）
+                seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+                
+                query_growth_nodes = """
+                MATCH (n)
+                WHERE n.group_id = $user_id 
+                  AND n.created_at > $since
+                RETURN count(n) as new_nodes
+                """
+                result = await session.run(
+                    query_growth_nodes,
+                    user_id=user_id,
+                    since=seven_days_ago.isoformat()
+                )
+                growth_nodes = await result.single()
+                
+                query_growth_edges = """
+                MATCH (source)-[r]->(target)
+                WHERE source.group_id = $user_id 
+                  AND target.group_id = $user_id
+                  AND r.created_at > $since
+                RETURN count(r) as new_edges
+                """
+                result = await session.run(
+                    query_growth_edges,
+                    user_id=user_id,
+                    since=seven_days_ago.isoformat()
+                )
+                growth_edges = await result.single()
+                
+                # 6. 构建响应
+                statistics = GraphStatistics(
+                    total_nodes=node_stats["total"] if node_stats else 0,
+                    total_edges=edge_stats["total_edges"] if edge_stats else 0,
+                    node_types={
+                        "entity": node_stats["entities"] if node_stats else 0,
+                        "episode": node_stats["episodes"] if node_stats else 0,
+                        "community": node_stats["communities"] if node_stats else 0
+                    },
+                    entity_domains=domains,
+                    top_entities=top_entities,
+                    growth=GrowthStats(
+                        last_7_days_nodes=growth_nodes["new_nodes"] if growth_nodes else 0,
+                        last_7_days_edges=growth_edges["new_edges"] if growth_edges else 0
+                    ),
+                    last_updated=datetime.now(timezone.utc)
+                )
+                
+                return GraphStatsResponse(
+                    user_id=user_id,
+                    statistics=statistics
+                )
+                
+        except Neo4jError as e:
+            logger.error(f"Neo4j error getting graph stats: {str(e)}")
+            raise
         except Exception as e:
-            logger.error(f"Find paths error: {str(e)}")
-            return PathQueryResponse(
-                paths=[],
-                total_paths=0,
-                query_time_ms=(time.time() - start_time) * 1000
-            )
+            logger.error(f"Error getting graph stats: {str(e)}")
+            raise
 
-    async def _find_shortest_paths(
-        self,
-        source_uuid: str,
-        target_uuid: str,
-        max_depth: int,
-        limit: int,
-        group_id: Optional[str] = None
-    ) -> List[Path]:
-        """查找最短路径（BFS算法）
-        
-        TODO: 实现实际的Neo4j路径查询
-        """
-        # 占位实现
-        return []
+    # ==================== 辅助方法 ====================
+
+    def _determine_node_type(self, labels: List[str]) -> str:
+        """根据标签确定节点类型"""
+        if "EpisodicNode" in labels:
+            return "episode"
+        elif "CommunityNode" in labels:
+            return "community"
+        return "entity"
+
+    def _parse_datetime(self, value: Any) -> Optional[datetime]:
+        """解析时间字段"""
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                return None
+        return None
