@@ -47,7 +47,7 @@ async def get_user_profile(
     ```
     """
     service = UserProfileService()
-    return await service.get_profile(current_user.id, session)
+    return await service.get_profile(current_user.user_id, session)
 
 
 @router.put(
@@ -84,5 +84,5 @@ async def update_user_profile(
     - 409: 邮箱已被其他用户使用
     """
     service = UserProfileService()
-    return await service.update_profile(current_user.id, request, session)
+    return await service.update_profile(current_user.user_id, request, session)
 

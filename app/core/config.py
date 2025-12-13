@@ -33,9 +33,10 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30  # PRD要求：30分钟
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7  # PRD要求：7天
     
-    # OpenAI配置
-    LLM_BASE_URL: str
-    OPENAI_API_KEY: str
+    # OpenAI/LLM配置
+    # LLM_BASE_URL默认使用BASE_URL，如果有独立的LLM服务则单独配置
+    LLM_BASE_URL: Optional[str] = None
+    OPENAI_API_KEY: Optional[str] = None
     OPENAI_MODEL: str = "gpt-4-turbo"
     
     # 应用配置

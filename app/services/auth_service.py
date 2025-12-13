@@ -3,9 +3,6 @@
 根据PRD_认证模块.md设计
 处理用户注册、登录、Token管理等业务逻辑
 """
-from datetime import datetime
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 from fastapi import HTTPException, status
 
 from app.models.db_models import User
@@ -27,23 +24,29 @@ from app.core.redis_client import (
     increment_failed_login,
     reset_failed_login,
     check_rate_limit,
-    LOGIN_MAX_ATTEMPTS,
-    LOGIN_RATE_LIMIT_WINDOW
 )
 from app.core.config import settings
+from app.crud.user import UserRepository
 
 
 class AuthService:
     """
     认证服务类
     实现REQ-AUTH-1到REQ-AUTH-5的所有功能
+    
+    使用 Repository Pattern，通过构造函数注入 UserRepository
     """
     
-    async def register(
-        self, 
-        request: RegisterRequest, 
-        session: AsyncSession
-    ) -> RegisterResponse:
+    def __init__(self, user_repo: UserRepository):
+        """
+        初始化认证服务
+        
+        Args:
+            user_repo: 用户数据访问层
+        """
+        self.user_repo = user_repo
+    
+    async def register(self, request: RegisterRequest) -> RegisterResponse:
         """
         用户注册 REQ-AUTH-1
         
@@ -56,7 +59,6 @@ class AuthService:
         
         Args:
             request: 注册请求
-            session: 数据库会话
             
         Returns:
             注册响应
@@ -65,12 +67,7 @@ class AuthService:
             HTTPException: 注册失败
         """
         # 1. 检查用户名是否已存在
-        result = await session.execute(
-            select(User).where(User.username == request.username)
-        )
-        existing_user = result.scalar_one_or_none()
-        
-        if existing_user:
+        if await self.user_repo.exists_by_username(request.username):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={
@@ -84,16 +81,12 @@ class AuthService:
         password_hash = hash_password(request.password)
         
         # 3. 创建用户记录
-        new_user = User(
+        new_user = await self.user_repo.create_user(
             user_id=user_id,
             username=request.username,
-            email=request.email,  # 可选字段
-            password_hash=password_hash
+            password_hash=password_hash,
+            email=request.email
         )
-        
-        session.add(new_user)
-        await session.commit()
-        await session.refresh(new_user)
         
         # 4. 返回响应（PRD要求不返回Token）
         return RegisterResponse(
@@ -103,11 +96,7 @@ class AuthService:
             message="Registration successful"
         )
     
-    async def login(
-        self, 
-        request: LoginRequest, 
-        session: AsyncSession
-    ) -> LoginResponse:
+    async def login(self, request: LoginRequest) -> LoginResponse:
         """
         用户登录 REQ-AUTH-2
         
@@ -121,7 +110,6 @@ class AuthService:
         
         Args:
             request: 登录请求
-            session: 数据库会话
             
         Returns:
             登录响应
@@ -140,10 +128,7 @@ class AuthService:
             )
         
         # 2. 查询用户
-        result = await session.execute(
-            select(User).where(User.username == request.username)
-        )
-        user = result.scalar_one_or_none()
+        user = await self.user_repo.get_by_username(request.username)
         
         if not user:
             # 增加失败次数
@@ -172,9 +157,7 @@ class AuthService:
         await reset_failed_login(request.username)
         
         # 5. 更新最后登录时间
-        user.last_login_at = datetime.utcnow()
-        await session.commit()
-        await session.refresh(user)
+        await self.user_repo.update_last_login(user)
         
         # 6. 生成Token（PRD要求payload包含user_id和username）
         access_token = create_access_token(user.user_id, user.username)
@@ -192,11 +175,7 @@ class AuthService:
             )
         )
     
-    async def refresh_token(
-        self, 
-        request: RefreshTokenRequest,
-        session: AsyncSession
-    ) -> RefreshTokenResponse:
+    async def refresh_token(self, request: RefreshTokenRequest) -> RefreshTokenResponse:
         """
         刷新访问令牌 REQ-AUTH-3
         
@@ -209,7 +188,6 @@ class AuthService:
         
         Args:
             request: 刷新Token请求
-            session: 数据库会话
             
         Returns:
             新的访问令牌
@@ -232,10 +210,7 @@ class AuthService:
         user_id = payload.get("user_id")
         
         # 3. 从数据库查询用户以获取username
-        result = await session.execute(
-            select(User).where(User.user_id == user_id)
-        )
-        user = result.scalar_one_or_none()
+        user = await self.user_repo.get_by_id(user_id)
         
         if not user:
             raise HTTPException(
@@ -282,8 +257,7 @@ class AuthService:
     async def change_password(
         self,
         user: User,
-        request: ChangePasswordRequest,
-        session: AsyncSession
+        request: ChangePasswordRequest
     ) -> ChangePasswordResponse:
         """
         修改密码 REQ-AUTH-4
@@ -297,7 +271,6 @@ class AuthService:
         Args:
             user: 当前用户（通过JWT认证中间件获取）
             request: 修改密码请求
-            session: 数据库会话
             
         Returns:
             修改密码响应
@@ -319,8 +292,8 @@ class AuthService:
         # 密码强度要求：最少8字符，包含大小写字母和数字
         
         # 3. 更新密码
-        user.password_hash = hash_password(request.new_password)
-        await session.commit()
+        new_password_hash = hash_password(request.new_password)
+        await self.user_repo.update_password(user, new_password_hash)
         
         # 4. 返回响应（PRD要求返回require_relogin）
         return ChangePasswordResponse(

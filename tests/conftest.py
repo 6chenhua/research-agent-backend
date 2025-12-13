@@ -1,8 +1,9 @@
 """
 Pytest配置和共享fixtures
+支持 Repository Pattern 的依赖注入测试
 """
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, AsyncMock
 
 # Mock tiktoken和deepdoc相关模块，避免网络请求和导入错误
 # 必须在导入main之前执行
@@ -96,3 +97,37 @@ async def client(test_session: AsyncSession) -> AsyncGenerator[AsyncClient, None
     # 清理 Redis 连接，避免事件循环问题
     await close_redis_client()
 
+
+@pytest_asyncio.fixture(scope="function")
+async def authenticated_client(client: AsyncClient) -> AsyncGenerator[tuple[AsyncClient, str, str], None]:
+    """
+    创建已认证的测试客户端
+    
+    返回: (client, access_token, user_id)
+    """
+    # 注册测试用户
+    register_response = await client.post(
+        "/api/auth/register",
+        json={
+            "username": "testuser_auth",
+            "password": "TestPass123"
+        }
+    )
+    user_id = register_response.json()["user_id"]
+    
+    # 登录获取token
+    login_response = await client.post(
+        "/api/auth/login",
+        json={
+            "username": "testuser_auth",
+            "password": "TestPass123"
+        }
+    )
+    access_token = login_response.json()["access_token"]
+    
+    yield client, access_token, user_id
+
+
+def auth_header(token: str) -> dict:
+    """生成认证头"""
+    return {"Authorization": f"Bearer {token}"}

@@ -7,12 +7,11 @@ import uuid
 from datetime import datetime
 from typing import Dict, Optional, List
 from fastapi import UploadFile, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 
 from app.core.graphiti_enhanced import enhanced_graphiti
 from app.services.pdf_parser import PDFParser
-from app.models.db_models import Paper, PaperStatus
+from app.models.db_models import PaperStatus
+from app.crud.paper import PaperRepository
 from graphiti_core.nodes import EpisodeType
 
 logger = logging.getLogger(__name__)
@@ -34,12 +33,19 @@ class IngestService:
     - ✅ 并发控制（每用户最多2个并发上传）
     - ✅ 超时保护（5分钟自动超时）
     - ✅ 详细日志和监控
+    - ✅ 使用 Repository Pattern
     """
 
-    def __init__(self, db: AsyncSession = None):
+    def __init__(self, paper_repo: Optional[PaperRepository] = None):
+        """
+        初始化论文摄入服务
+        
+        Args:
+            paper_repo: 论文数据访问层（可选）
+        """
         self.parser = PDFParser()
         self.graph = enhanced_graphiti  # ← 使用增强版全局单例
-        self.db = db
+        self.paper_repo = paper_repo
 
     async def ingest_pdf(
         self, 
@@ -95,7 +101,7 @@ class IngestService:
             )
             
             # Step 5: 保存论文元数据到MySQL
-            if self.db:
+            if self.paper_repo:
                 await self._save_paper_metadata(
                     paper_id=paper_id,
                     parsed_data=parsed_data,
@@ -252,23 +258,19 @@ Section: {heading}
         更新论文解析内容到MySQL
         """
         try:
-            result = await self.db.execute(
-                select(Paper).filter(Paper.id == paper_id)
+            paper = await self.paper_repo.update_parsed_content(
+                paper_id=paper_id,
+                parsed_content=parsed_data,
+                status=PaperStatus.PARSED
             )
-            paper = result.scalar_one_or_none()
             
             if paper:
-                paper.parsed_content = parsed_data
-                paper.status = PaperStatus.PARSED
-                paper.parsed_at = datetime.utcnow()
-                await self.db.commit()
                 logger.info(f"Updated paper parsed content: {paper_id}")
             else:
                 logger.warning(f"Paper not found for metadata update: {paper_id}")
             
         except Exception as e:
             logger.error(f"Failed to save metadata: {str(e)}")
-            await self.db.rollback()
             # 不抛出异常，因为主要逻辑（图谱摄入）已完成
 
     async def get_paper_detail(
@@ -298,11 +300,8 @@ Section: {heading}
         
         # Step 1: 从MySQL获取论文信息
         paper = None
-        if self.db:
-            result = await self.db.execute(
-                select(Paper).filter(Paper.id == paper_id)
-            )
-            paper = result.scalar_one_or_none()
+        if self.paper_repo:
+            paper = await self.paper_repo.get_by_id(paper_id)
         
         if not paper:
             raise HTTPException(status_code=404, detail="Paper not found")

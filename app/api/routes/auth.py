@@ -3,12 +3,11 @@
 根据PRD_认证模块.md设计
 提供用户注册、登录、Token管理等接口
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_session
 from app.api.dependencies.auth import get_current_user
+from app.api.dependencies.services import get_auth_service
 from app.services.auth_service import AuthService
 from app.schemas.auth import (
     RegisterRequest, RegisterResponse,
@@ -32,7 +31,7 @@ security = HTTPBearer()
 )
 async def register(
     request: RegisterRequest,
-    session: AsyncSession = Depends(get_session)
+    auth_service: AuthService = Depends(get_auth_service)
 ):
     """
     用户注册
@@ -47,8 +46,7 @@ async def register(
     - **created_at**: 创建时间
     - **message**: 响应消息
     """
-    auth_service = AuthService()
-    return await auth_service.register(request, session)
+    return await auth_service.register(request)
 
 
 @router.post(
@@ -59,7 +57,7 @@ async def register(
 )
 async def login(
     request: LoginRequest,
-    session: AsyncSession = Depends(get_session)
+    auth_service: AuthService = Depends(get_auth_service)
 ):
     """
     用户登录
@@ -78,8 +76,7 @@ async def login(
     - 同一用户名15分钟内最多尝试5次
     - 超过限制将返回429错误
     """
-    auth_service = AuthService()
-    return await auth_service.login(request, session)
+    return await auth_service.login(request)
 
 
 @router.post(
@@ -90,7 +87,7 @@ async def login(
 )
 async def refresh_token(
     request: RefreshTokenRequest,
-    session: AsyncSession = Depends(get_session)
+    auth_service: AuthService = Depends(get_auth_service)
 ):
     """
     刷新访问令牌
@@ -106,8 +103,7 @@ async def refresh_token(
     - 前端检测到access_token即将过期（过期前5分钟）
     - 前端收到401响应且错误为TOKEN_EXPIRED时
     """
-    auth_service = AuthService()
-    return await auth_service.refresh_token(request, session)
+    return await auth_service.refresh_token(request)
 
 
 @router.post(
@@ -119,7 +115,7 @@ async def refresh_token(
 async def change_password(
     request: ChangePasswordRequest,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session)
+    auth_service: AuthService = Depends(get_auth_service)
 ):
     """
     修改密码
@@ -136,8 +132,7 @@ async def change_password(
     - **message**: 响应消息
     - **require_relogin**: 是否需要重新登录
     """
-    auth_service = AuthService()
-    return await auth_service.change_password(current_user, request, session)
+    return await auth_service.change_password(current_user, request)
 
 
 @router.post(
@@ -147,7 +142,8 @@ async def change_password(
     description="REQ-AUTH-5: 用户登出系统，将当前Token加入黑名单"
 )
 async def logout(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    auth_service: AuthService = Depends(get_auth_service)
 ):
     """
     用户登出
@@ -163,5 +159,4 @@ async def logout(
     - **message**: 响应消息
     """
     token = credentials.credentials
-    auth_service = AuthService()
     return await auth_service.logout(token)

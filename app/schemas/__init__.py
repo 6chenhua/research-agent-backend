@@ -21,8 +21,17 @@ from app.schemas.auth import (
 
 # 聊天相关
 from app.schemas.chat import (
-    ChatRequest,
-    ChatResponse,
+    ChatSendResponse,
+    ChatHistoryResponse,
+    ChatSendRequest,
+    CreateResearchResponse,
+    ChatMessageInfo,
+    ChatSendStatus,
+    CreateResearchRequest,
+    ContextData,
+    ResearchSessionListResponse,
+    ResearchSessionInfo,
+    SearchResultItem,
 )
 
 # 论文相关
@@ -59,12 +68,6 @@ from app.schemas.graph import (
     GraphErrorResponse,
 )
 
-# 社区相关
-from app.schemas.community import (
-    Community,
-    CommunityNode,
-)
-
 # 图谱实体和关系
 from app.schemas.entities import (
     PaperEntity,
@@ -97,8 +100,17 @@ __all__ = [
     "TokenPayload",
     
     # Chat
-    "ChatRequest",
-    "ChatResponse",
+    "ChatSendResponse",
+    "ChatHistoryResponse",
+    "ChatSendRequest",
+    "CreateResearchResponse",
+    "ChatMessageInfo",
+    "ChatSendStatus",
+    "CreateResearchRequest",
+    "ContextData",
+    "ResearchSessionListResponse",
+    "ResearchSessionInfo",
+    "SearchResultItem",
     
     # Paper
     "PaperMetadata",
@@ -125,10 +137,6 @@ __all__ = [
     "EdgeDetailResponse",
     "GraphStatsResponse",
     "GraphErrorResponse",
-    
-    # Community
-    "Community",
-    "CommunityNode",
     
     # Entities
     "PaperEntity",

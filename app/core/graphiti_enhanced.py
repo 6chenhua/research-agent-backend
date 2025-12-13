@@ -290,6 +290,7 @@ class EnhancedGraphitiSingleton:
                         source=source,  # ← 使用传入的source类型
                         source_description=source_description,
                         reference_time=reference_time,
+                        update_communities=True,  # 标签传播算法，摄入用户消息时更新社区
                         **kwargs
                     ),
                     timeout=timeout
@@ -340,14 +341,12 @@ class EnhancedGraphitiSingleton:
     
     async def build_communities(
         self,
-        group_id: Optional[str] = None,
-        update_communities: bool = True
+        group_ids: Optional[List[str]] = None
     ):
         """构建社区（重量级操作，添加日志）
         
         Args:
-            group_id: 命名空间ID
-            update_communities: 是否更新现有社区
+            group_ids: 命名空间ID列表（可选，部分版本的graphiti可能不支持）
             
         Returns:
             社区构建结果
@@ -358,18 +357,24 @@ class EnhancedGraphitiSingleton:
         start_time = time.time()
         
         try:
-            logger.info(f"🔨 Building communities | group_id={group_id}")
+            logger.info(f"🔨 Building communities | group_ids={group_ids}")
             
-            result = await self.client.build_communities(
-                group_id=group_id,
-                update_communities=update_communities
-            )
+            # graphiti-core不同版本的API可能不同，尝试兼容
+            try:
+                if group_ids:
+                    result = await self.client.build_communities(group_ids=group_ids)
+                else:
+                    result = await self.client.build_communities()
+            except TypeError as te:
+                # 如果group_ids参数不被支持，使用无参数调用
+                logger.warning(f"build_communities不支持group_ids参数，使用默认调用: {te}")
+                result = await self.client.build_communities()
             
             duration = time.time() - start_time
             
             logger.info(
                 f"✅ Communities built: {duration:.2f}s | "
-                f"group_id={group_id}"
+                f"group_ids={group_ids}"
             )
             
             return result
@@ -377,9 +382,10 @@ class EnhancedGraphitiSingleton:
         except Exception as e:
             logger.error(
                 f"❌ Build communities error: {str(e)} | "
-                f"group_id={group_id}"
+                f"group_ids={group_ids}"
             )
-            raise
+            # 社区构建失败不应该阻塞主流程，记录错误但不抛出
+            return None
     
     def get_metrics(self) -> Dict[str, Any]:
         """获取监控指标

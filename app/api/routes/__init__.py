@@ -4,12 +4,14 @@
 - /api/auth/* - 认证相关
 - /api/user/* - 用户资料
 - /api/v1/graph/* - 图谱模块（REQ-GRAPH-1~4）
-- /api/chat/* - 聊天模块
+- /api/research/* - 研究会话模块（REQ-CHAT-1~2）
+- /api/chat/* - 聊天模块（REQ-CHAT-3~4）
 - /api/papers/* - 论文模块
 """
 from fastapi import APIRouter
 from .auth import router as auth_router
 from .chat import router as chat_router
+from .research import router as research_router
 from .graph import router as graph_router
 from .papers import router as papers_router
 from .user import router as user_router
@@ -25,6 +27,11 @@ api_router.include_router(user_router)
 # 图谱模块路由（PRD要求使用/v1/graph前缀）
 api_router.include_router(graph_router, prefix="/v1/graph", tags=["图谱模块"])
 
-# 其他功能路由
-api_router.include_router(chat_router, prefix="/chat", tags=["Chat"])
+# 研究会话路由（research router已经包含/research前缀）
+api_router.include_router(research_router)
+
+# 聊天路由（chat router已经包含/chat前缀）
+api_router.include_router(chat_router)
+
+# 论文模块路由
 api_router.include_router(papers_router, prefix="/papers", tags=["Papers"])
