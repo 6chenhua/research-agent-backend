@@ -17,6 +17,8 @@ from app.services.auth_service import AuthService
 from app.services.research_service import ResearchService
 from app.services.chat_service import ChatService
 from app.services.ingest_service import IngestService
+from app.services.profile_service import ProfileService
+from app.services.note_service import NoteService
 
 
 # ==================== Repository 工厂函数 ====================
@@ -101,23 +103,13 @@ async def get_research_service(
 async def get_chat_service(
     session_repo: SessionRepository = Depends(get_session_repository),
     message_repo: MessageRepository = Depends(get_message_repository),
-    paper_repo: PaperRepository = Depends(get_paper_repository)
+    paper_repo: PaperRepository = Depends(get_paper_repository),
+    profile_service: ProfileService = Depends(get_profile_service)
 ) -> ChatService:
     """
     获取聊天服务实例
-    
-    使用示例:
-    ```python
-    @router.post("/sessions/{session_id}/messages")
-    async def send_message(
-        session_id: str,
-        request: SendMessageRequest,
-        chat_service: ChatService = Depends(get_chat_service)
-    ):
-        return await chat_service.send_message(...)
-    ```
     """
-    return ChatService(session_repo, message_repo, paper_repo)
+    return ChatService(session_repo, message_repo, paper_repo, profile_service)
 
 
 async def get_ingest_service(
@@ -125,15 +117,24 @@ async def get_ingest_service(
 ) -> IngestService:
     """
     获取论文摄入服务实例
-    
-    使用示例:
-    ```python
-    @router.post("/papers/upload")
-    async def upload_paper(
-        file: UploadFile,
-        ingest_service: IngestService = Depends(get_ingest_service)
-    ):
-        return await ingest_service.ingest_pdf(file, user_id)
-    ```
     """
     return IngestService(paper_repo)
+
+
+async def get_profile_service(
+    session: AsyncSession = Depends(get_session)
+) -> ProfileService:
+    """
+    获取用户画像服务实例
+    """
+    return ProfileService(session)
+
+
+async def get_note_service(
+    message_repo: MessageRepository = Depends(get_message_repository),
+    session_repo: SessionRepository = Depends(get_session_repository)
+) -> NoteService:
+    """
+    获取笔记服务实例
+    """
+    return NoteService(message_repo, session_repo)

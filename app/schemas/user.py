@@ -50,14 +50,79 @@ class PaperSettings(BaseModel):
     default_granularity: str = Field(default="section", description="添加到图谱的默认粒度")
 
 
+# ==================== 用户画像模型（个性化） ====================
+
+class InteractionStats(BaseModel):
+    """交互统计"""
+    total_sessions: int = Field(default=0, description="总会话数")
+    total_messages: int = Field(default=0, description="总消息数")
+    total_papers: int = Field(default=0, description="总论文数")
+    last_active_at: Optional[str] = Field(default=None, description="最后活跃时间")
+
+
+class TopicCount(BaseModel):
+    """话题计数"""
+    topic: str = Field(..., description="话题关键词")
+    count: int = Field(default=1, description="出现次数")
+
+
+class UserProfile(BaseModel):
+    """
+    用户画像（用于个性化）
+    
+    存储在 users.preferences 字段中，由系统自动分析更新。
+    """
+    # 研究兴趣（domain: 出现次数）
+    research_interests: dict = Field(
+        default_factory=dict, 
+        description="研究兴趣，格式: {domain: count}"
+    )
+    
+    # 知识水平
+    expertise_level: str = Field(
+        default="intermediate", 
+        description="知识水平: beginner / intermediate / expert"
+    )
+    
+    # 回复偏好
+    preferred_depth: str = Field(
+        default="normal", 
+        description="回复深度偏好: brief / normal / detailed"
+    )
+    preferred_language: str = Field(
+        default="zh-CN", 
+        description="语言偏好: zh-CN / en-US"
+    )
+    
+    # 常问话题
+    frequently_asked_topics: List[TopicCount] = Field(
+        default_factory=list, 
+        description="常问话题列表"
+    )
+    
+    # 交互统计
+    interaction_stats: InteractionStats = Field(
+        default_factory=InteractionStats, 
+        description="交互统计数据"
+    )
+
+
 class UserPreferences(BaseModel):
-    """用户偏好设置"""
+    """用户偏好设置（包含画像和UI设置）"""
+    # UI 偏好
     default_domains: List[str] = Field(default_factory=list, description="默认研究领域")
     theme: str = Field(default="light", description="主题: dark / light / auto")
     language: str = Field(default="zh-CN", description="语言: zh-CN / en-US")
     graph_settings: Optional[GraphSettings] = Field(default=None, description="图谱可视化设置")
     chat_settings: Optional[ChatSettings] = Field(default=None, description="聊天设置")
     paper_settings: Optional[PaperSettings] = Field(default=None, description="论文设置")
+    
+    # 个性化画像（系统自动更新）
+    research_interests: dict = Field(default_factory=dict, description="研究兴趣统计")
+    expertise_level: str = Field(default="intermediate", description="知识水平")
+    preferred_depth: str = Field(default="normal", description="回复深度偏好")
+    frequently_asked_topics: List[TopicCount] = Field(default_factory=list, description="常问话题")
+    interaction_stats: Optional[InteractionStats] = Field(default=None, description="交互统计")
 
 
 # ==================== 请求模型 ====================

@@ -78,6 +78,7 @@ class LLMClient:
         query: str,
         context: str,
         history: Optional[List[Dict[str, str]]] = None,
+        user_profile: Optional[Dict[str, Any]] = None,
         model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 4000
@@ -85,10 +86,13 @@ class LLMClient:
         """
         带context的对话（用于研究助手）
         
+        支持个性化回复：根据用户画像调整回复风格。
+        
         Args:
             query: 用户查询
             context: 检索到的context信息
             history: 历史对话记录
+            user_profile: 用户画像（用于个性化）
             model: 模型名称
             temperature: 温度参数
             max_tokens: 最大token数
@@ -98,8 +102,8 @@ class LLMClient:
         """
         history = history or []
         
-        # 构建system prompt
-        system_prompt = self._build_research_system_prompt(context)
+        # 构建system prompt（包含个性化信息）
+        system_prompt = self._build_research_system_prompt(context, user_profile)
         
         # 构建消息列表
         messages = [
@@ -138,18 +142,28 @@ class LLMClient:
             # 返回降级响应
             return "抱歉，我目前无法处理您的请求。请稍后再试。"
     
-    def _build_research_system_prompt(self, context: str) -> str:
+    def _build_research_system_prompt(
+        self, 
+        context: str,
+        user_profile: Optional[Dict[str, Any]] = None
+    ) -> str:
         """
         构建研究助手的system prompt
         
+        支持个性化：根据用户画像调整回复风格。
+        
         Args:
             context: 检索到的context信息
+            user_profile: 用户画像（可选）
             
         Returns:
             完整的system prompt
         """
+        # 构建个性化部分
+        personalization = self._build_personalization_prompt(user_profile)
+        
         if context:
-            return f"""你是一个学术研究助手，帮助用户进行文献调研和知识管理。
+            base_prompt = f"""你是一个学术研究助手，帮助用户进行文献调研和知识管理。
 
 以下是从用户的知识图谱中检索到的相关信息：
 {context}
@@ -161,7 +175,7 @@ class LLMClient:
 4. 回答要准确、专业、有条理
 5. 如果涉及学术概念，请给出准确的定义和解释"""
         else:
-            return """你是一个学术研究助手，帮助用户进行文献调研和知识管理。
+            base_prompt = """你是一个学术研究助手，帮助用户进行文献调研和知识管理。
 
 目前没有从知识图谱中检索到相关信息。
 
@@ -170,6 +184,78 @@ class LLMClient:
 2. 如果涉及学术概念，请给出准确的定义和解释
 3. 如果不确定，请如实告知用户
 4. 建议用户上传相关论文以获得更精准的答案"""
+        
+        # 如果有个性化信息，添加到提示词中
+        if personalization:
+            return f"{base_prompt}\n\n{personalization}"
+        
+        return base_prompt
+    
+    def _build_personalization_prompt(
+        self, 
+        user_profile: Optional[Dict[str, Any]]
+    ) -> str:
+        """
+        构建个性化提示词
+        
+        根据用户画像生成个性化指导。
+        
+        Args:
+            user_profile: 用户画像
+            
+        Returns:
+            个性化提示词（如果没有画像返回空字符串）
+        """
+        if not user_profile:
+            return ""
+        
+        # 获取用户画像信息
+        expertise = user_profile.get("expertise_level", "intermediate")
+        depth = user_profile.get("preferred_depth", "normal")
+        research_interests = user_profile.get("research_interests", {})
+        
+        # 获取主要研究兴趣
+        top_interests = sorted(
+            research_interests.items(), 
+            key=lambda x: x[1], 
+            reverse=True
+        )[:3]
+        interests_str = ", ".join([domain for domain, _ in top_interests]) if top_interests else "未指定"
+        
+        prompt = f"""【用户画像 - 请据此调整回复风格】
+- 专业水平：{expertise}
+- 研究兴趣：{interests_str}
+- 偏好深度：{depth}
+
+"""
+        
+        # 根据专业水平添加指导
+        if expertise == "expert":
+            prompt += """个性化指导：
+- 用户是专家，可以直接使用专业术语，无需过多解释基础概念
+- 重点关注高级话题、最新研究进展和细节讨论
+- 可以深入技术细节，假设用户有扎实的背景知识
+"""
+        elif expertise == "beginner":
+            prompt += """个性化指导：
+- 用户是初学者，请用通俗易懂的语言解释概念
+- 避免使用过多专业术语，如需使用请附带解释
+- 提供背景信息和基础知识，使用类比帮助理解
+"""
+        else:  # intermediate
+            prompt += """个性化指导：
+- 用户有中级背景知识，平衡专业性和可读性
+- 使用专业术语时可简要解释关键概念
+- 根据问题复杂度调整解释深度
+"""
+        
+        # 根据深度偏好添加指导
+        if depth == "brief":
+            prompt += "- 用户偏好简洁回答，请直接切入要点，避免冗长\n"
+        elif depth == "detailed":
+            prompt += "- 用户偏好详细回答，请提供全面的解释、示例和引用\n"
+        
+        return prompt
     
     async def chat_with_tools(
         self,

@@ -30,7 +30,7 @@ from app.models.db_models import User
 import logging
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(prefix="/graph", tags=["图谱模块"])
 
 
 # ==================== REQ-GRAPH-4: 图谱统计信息（优先匹配） ====================

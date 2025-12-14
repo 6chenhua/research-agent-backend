@@ -26,6 +26,21 @@ class SessionRepository(BaseRepository[ResearchSession]):
     def __init__(self, session: AsyncSession):
         super().__init__(session, ResearchSession)
     
+    async def get_by_id(self, session_id: str) -> Optional[ResearchSession]:
+        """
+        根据ID查询会话
+        
+        Args:
+            session_id: 会话ID
+            
+        Returns:
+            会话对象或 None
+        """
+        result = await self.session.execute(
+            select(ResearchSession).where(ResearchSession.id == session_id)
+        )
+        return result.scalar_one_or_none()
+    
     async def create_session(
         self,
         session_id: str,

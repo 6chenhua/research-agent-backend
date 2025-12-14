@@ -1,13 +1,17 @@
 """
 聊天API路由
 根据PRD_研究与聊天模块.md设计
-提供消息发送、历史记录查询等接口
+提供消息发送、历史记录查询、添加笔记等接口
 """
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
+from typing import Optional
 
 from app.api.dependencies.auth import get_current_user
-from app.api.dependencies.services import get_chat_service
+from app.api.dependencies.services import get_chat_service, get_note_service
 from app.services.chat_service import ChatService
+from app.services.note_service import NoteService
 from app.schemas.chat import (
     ChatSendRequest,
     ChatSendResponse,
@@ -15,6 +19,8 @@ from app.schemas.chat import (
     ErrorResponse
 )
 from app.models.db_models import User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["聊天"])
 
@@ -46,12 +52,14 @@ async def send_message(
     
     处理流程：
     1. 保存用户消息到数据库
-    2. 异步将用户消息添加到知识图谱
-    3. 根据是否有附带论文选择context来源
-       - 有论文：从论文中提取context
+    2. 根据是否有附带论文选择context来源
+       - 有论文：解析论文并用LLM提取相关内容
        - 无论文：从知识图谱检索context
-    4. 调用LLM生成回复
-    5. 保存Agent消息到数据库
+    3. 调用LLM生成回复
+    4. 保存Agent消息到数据库
+    5. 异步更新用户画像
+    
+    注意：消息不会自动添加到图谱，用户可通过 add-to-notes 主动添加。
     
     返回：
     - **user_message**: 用户消息信息
@@ -156,4 +164,91 @@ async def get_chat_history(
                 "error": "BAD_REQUEST",
                 "message": error_msg
             }
+        )
+
+
+# ==================== 私有笔记图谱 ====================
+
+class AddToNotesRequest(BaseModel):
+    """添加到笔记的请求"""
+    note: Optional[str] = None
+
+
+class AddToNotesResponse(BaseModel):
+    """添加到笔记的响应"""
+    message_id: str
+    status: str
+    episode_name: str
+
+
+@router.post(
+    "/messages/{message_id}/add-to-notes",
+    response_model=AddToNotesResponse,
+    summary="添加消息到私有笔记图谱",
+    description="""
+    将消息添加到用户的私有笔记图谱（user:{user_id}:notes）。
+    
+    **支持的消息类型：**
+    - 用户消息（role: user）
+    - Agent 回复（role: agent）
+    
+    系统会自动识别消息类型并标记。可选添加额外笔记。
+    
+    **可提取的实体：**
+    - ResearchInsight: 研究洞见
+    - ResearchQuestion: 研究问题
+    - Note: 笔记
+    - KeyConcept: 关键概念
+    - Reference: 引用
+    """,
+    responses={
+        200: {"description": "添加成功"},
+        404: {"description": "消息不存在"},
+        403: {"description": "无权访问"},
+    }
+)
+async def add_message_to_notes(
+    message_id: str,
+    request: AddToNotesRequest = None,
+    current_user: User = Depends(get_current_user),
+    note_service: NoteService = Depends(get_note_service)
+):
+    """
+    将消息（用户消息或Agent回复）添加到用户的私有笔记图谱。
+    
+    Args:
+        message_id: 消息ID（可以是用户消息或Agent回复的ID）
+        request: 可选的额外笔记
+        current_user: 当前用户
+        note_service: 笔记服务
+    """
+    try:
+        result = await note_service.add_message_to_notes(
+            message_id=message_id,
+            user_id=current_user.user_id,
+            extra_note=request.note if request else None
+        )
+        return AddToNotesResponse(**result)
+        
+    except ValueError as e:
+        error_msg = str(e)
+        if error_msg == "MESSAGE_NOT_FOUND":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"error": "MESSAGE_NOT_FOUND", "message": "Message not found"}
+            )
+        elif error_msg == "ACCESS_DENIED":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"error": "ACCESS_DENIED", "message": "Access denied"}
+            )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "BAD_REQUEST", "message": error_msg}
+        )
+    except Exception as e:
+        logger.error(f"❌ Failed to add message to notes: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "INTERNAL_ERROR", "message": str(e)}
         )

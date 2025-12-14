@@ -25,7 +25,7 @@ api_router.include_router(auth_router)
 api_router.include_router(user_router)
 
 # 图谱模块路由（PRD要求使用/v1/graph前缀）
-api_router.include_router(graph_router, prefix="/v1/graph", tags=["图谱模块"])
+api_router.include_router(graph_router)
 
 # 研究会话路由（research router已经包含/research前缀）
 api_router.include_router(research_router)
@@ -34,4 +34,4 @@ api_router.include_router(research_router)
 api_router.include_router(chat_router)
 
 # 论文模块路由
-api_router.include_router(papers_router, prefix="/papers", tags=["Papers"])
+api_router.include_router(papers_router)

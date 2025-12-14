@@ -1,18 +1,26 @@
 """
 论文摄入服务
 负责解析PDF论文并将内容添加到知识图谱
+
+使用 Domain 前缀实体类型方案：
+- 摄入时根据论文的 domain 生成带前缀的 entity_types
+- 例如 AI 论文会生成 AI_Concept, AI_Method 等实体类型
+- 搜索时可通过 SearchFilters 按 domain 过滤
 """
 import logging
 import uuid
 from datetime import datetime
 from typing import Dict, Optional, List
 from fastapi import UploadFile, HTTPException
+import os
 
 from app.core.graphiti_enhanced import enhanced_graphiti
 from app.services.pdf_parser import PDFParser
-from app.models.db_models import PaperStatus
 from app.crud.paper import PaperRepository
 from graphiti_core.nodes import EpisodeType
+from app.utils.entity_types import normalize_domain
+from app.core.config import settings
+from app.models.db_models import Paper, PaperStatus
 
 logger = logging.getLogger(__name__)
 
@@ -47,358 +55,321 @@ class IngestService:
         self.graph = enhanced_graphiti  # ← 使用增强版全局单例
         self.paper_repo = paper_repo
 
-    async def ingest_pdf(
-        self, 
-        file: UploadFile, 
-        user_id: str,
-        group_id: Optional[str] = None
+    async def upload_paper(
+        self,
+        file: UploadFile,
+        user_id: str
     ) -> Dict:
         """
-        摄入PDF论文到知识图谱
+        上传论文PDF（只保存，不解析）
         
         Args:
             file: 上传的PDF文件
             user_id: 用户ID
-            group_id: 图谱命名空间ID，默认为用户命名空间
             
         Returns:
-            包含paper_id, title, status等信息的字典
+            包含 paper_id, filename, file_size, status 的字典
+            
+        Raises:
+            HTTPException: 文件格式或大小无效
         """
-        # 参数验证
-        if not file.filename.endswith('.pdf'):
+
+        
+        # 验证文件格式
+        if not file.filename or not file.filename.lower().endswith('.pdf'):
             raise HTTPException(status_code=400, detail="Only PDF files are supported")
         
-        # 文件大小限制 (50MB)
-        max_size = 50 * 1024 * 1024
+        # 读取文件并验证大小
         file_bytes = await file.read()
+        max_size = 50 * 1024 * 1024  # 50MB
+        
         if len(file_bytes) > max_size:
             raise HTTPException(
-                status_code=400, 
-                detail=f"File size exceeds 50MB limit"
+                status_code=400,
+                detail=f"File size ({len(file_bytes) / 1024 / 1024:.1f}MB) exceeds 50MB limit"
             )
         
-        try:
-            # Step 1: 解析PDF
-            logger.info(f"Parsing PDF: {file.filename}")
-            parsed_data = await self.parser.parse(file_bytes, file.filename)
-            
-            # Step 2: 生成paper_id
-            paper_id = f"paper_{uuid.uuid4().hex[:12]}"
-            
-            # Step 3: 设置命名空间（用户图谱）
-            if not group_id:
-                group_id = f"user:{user_id}"
-            
-            # Step 4: 将章节内容作为Episodes添加到Graphiti（并发优化）
-            logger.info(f"Adding {len(parsed_data['sections'])} sections to graph for paper: {parsed_data['title']}")
-            
-            # 并发添加episodes（提升性能）
-            episode_results = await self._add_episodes_concurrent(
-                parsed_data=parsed_data,
-                paper_id=paper_id,
-                user_id=user_id,
-                group_id=group_id
-            )
-            
-            # Step 5: 保存论文元数据到MySQL
-            if self.paper_repo:
-                await self._save_paper_metadata(
-                    paper_id=paper_id,
-                    parsed_data=parsed_data,
-                    file_name=file.filename
-                )
-            
-            logger.info(f"Successfully ingested paper: {paper_id}")
-            
-            return {
-                "paper_id": paper_id,
-                "title": parsed_data['title'],
-                "authors": parsed_data.get('authors', []),
-                "year": parsed_data.get('year'),
-                "sections_count": len(parsed_data['sections']),
-                "episodes_added": len(episode_results),
-                "status": "success",
-                "group_id": group_id
-            }
-            
-        except Exception as e:
-            logger.error(f"Ingestion failed for {file.filename}: {str(e)}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to ingest PDF: {str(e)}"
-            )
-
-    async def _add_episodes_concurrent(
-        self,
-        parsed_data: Dict,
-        paper_id: str,
-        user_id: str,
-        group_id: str,
-        max_concurrent: int = 3
-    ) -> List:
-        """
-        并发添加多个episodes到Graphiti
+        # 生成唯一文件名和保存路径
+        paper_id = f"paper_{uuid.uuid4().hex[:12]}"
+        safe_filename = f"{paper_id}_{file.filename}"
         
-        优化说明：
-        - 使用asyncio.Semaphore控制并发数量
-        - 避免同时发起过多请求压垮Graphiti/Neo4j
-        - 保持错误处理，失败的episode不影响其他episode
+        # 确保上传目录存在
+        upload_dir = settings.UPLOAD_DIR
+        os.makedirs(upload_dir, exist_ok=True)
         
-        Args:
-            parsed_data: 解析后的论文数据
-            paper_id: 论文ID
-            user_id: 用户ID
-            group_id: 图谱命名空间
-            max_concurrent: 最大并发数（默认3，可根据服务器性能调整）
-            
-        Returns:
-            成功添加的episode结果列表
-        """
-        import asyncio
+        file_path = os.path.join(upload_dir, safe_filename)
         
-        sections = parsed_data['sections']
-        semaphore = asyncio.Semaphore(max_concurrent)
-        episode_results = []
+        # 保存文件到磁盘
+        with open(file_path, 'wb') as f:
+            f.write(file_bytes)
         
-        async def add_single_episode(idx: int, section: Dict):
-            """添加单个episode（带并发控制）"""
-            async with semaphore:  # 控制并发数量
-                try:
-                    # 构建Episode内容
-                    episode_content = self._build_episode_content(
-                        paper_id=paper_id,
-                        title=parsed_data['title'],
-                        section=section,
-                        section_idx=idx
-                    )
-                    
-                    logger.info(
-                        f"  [{idx+1}/{len(sections)}] Adding section: "
-                        f"{section.get('heading', 'N/A')[:30]}... "
-                        f"(content: {len(episode_content)} chars)"
-                    )
-                    
-                    # 调用Graphiti.add_episode
-                    result = await self.graph.add_episode(
-                        episode_body=episode_content,
-                        user_id=user_id,
-                        group_id=group_id,
-                        name=f"{paper_id}_section_{idx+1}",
-                        source=EpisodeType.text,
-                        source_description=f"Section {idx+1} from paper: {parsed_data['title']}",
-                        reference_time=datetime.utcnow(),
-                        timeout=300.0
-                    )
-                    
-                    logger.info(f"  ✅ [{idx+1}/{len(sections)}] Section added successfully")
-                    return result
-                    
-                except Exception as e:
-                    logger.error(
-                        f"  ❌ [{idx+1}/{len(sections)}] Failed to add section: {str(e)}",
-                        exc_info=True
-                    )
-                    return None  # 返回None表示失败
+        logger.info(f"📄 File saved: {file_path}")
         
-        # 创建所有任务
-        tasks = [
-            add_single_episode(idx, section)
-            for idx, section in enumerate(sections)
-        ]
+        # 创建数据库记录
+        if not self.paper_repo:
+            raise HTTPException(status_code=500, detail="Paper repository not available")
         
-        # 并发执行所有任务
-        logger.info(f"🚀 Starting concurrent upload with max_concurrent={max_concurrent}")
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # 过滤成功的结果
-        episode_results = [r for r in results if r is not None and not isinstance(r, Exception)]
-        
-        success_count = len(episode_results)
-        total_count = len(sections)
-        logger.info(
-            f"📊 Episode upload complete: {success_count}/{total_count} succeeded, "
-            f"{total_count - success_count} failed"
+        paper = Paper(
+            id=paper_id,
+            user_id=user_id,
+            filename=file.filename,
+            file_path=file_path,
+            file_size=len(file_bytes),
+            status=PaperStatus.UPLOADED,
+            domains=None,
+            parsed_content=None,
+            created_at=datetime.utcnow()
         )
         
-        return episode_results
+        await self.paper_repo.create(paper)
+        
+        logger.info(f"✅ Paper uploaded: {paper_id} ({file.filename})")
+        
+        return {
+            "paper_id": paper_id,
+            "filename": file.filename,
+            "file_size": len(file_bytes),
+            "status": "uploaded",
+            "message": "Paper uploaded successfully. It will be parsed when used in chat."
+        }
     
     def _build_episode_content(
         self,
         paper_id: str,
         title: str,
         section: Dict,
-        section_idx: int
+        section_idx: int,
+        domain: str = "General"
     ) -> str:
         """
         构建Episode内容
         
-        将章节内容格式化为适合Graphiti处理的文本
+        将章节内容格式化为适合Graphiti处理的文本。
+        
+        设计原则：
+        1. 不按 section 类型区分实体类型，让 LLM 根据内容自动判断
+        2. Section 标题作为上下文提示，帮助 LLM 理解内容性质
+        3. 包含 domain 信息以帮助 LLM 更准确地提取领域实体
+        
+        Args:
+            paper_id: 论文ID
+            title: 论文标题
+            section: 章节数据
+            section_idx: 章节索引
+            domain: 论文所属领域
+            
+        Returns:
+            格式化的 episode 内容
         """
         heading = section.get('heading', f'Section {section_idx + 1}')
         content = section.get('content', '')
         
+        # 标准化 section 类型描述（帮助 LLM 理解上下文）
+        section_context = self._get_section_context_hint(heading)
+        
         # 构建结构化的Episode内容
+        # 这个格式设计是为了让 Graphiti 的 LLM 更好地理解上下文
         episode_text = f"""
-Paper Title: {title}
-Paper ID: {paper_id}
+[Research Paper Context]
+Domain: {domain}
+Paper: {title}
 Section: {heading}
+{section_context}
 
+[Content]
 {content}
 """.strip()
         
         return episode_text
-
-    async def _save_paper_metadata(
-        self, 
-        paper_id: str, 
-        parsed_data: Dict,
-        file_name: str
-    ):
+    
+    def _get_section_context_hint(self, heading: str) -> str:
         """
-        更新论文解析内容到MySQL
+        根据 section 标题生成上下文提示
+        
+        这不是用来区分实体类型的，而是给 LLM 一个提示，
+        帮助它理解当前内容的性质。
+        
+        Args:
+            heading: section 标题
+            
+        Returns:
+            上下文提示字符串
         """
-        try:
-            paper = await self.paper_repo.update_parsed_content(
-                paper_id=paper_id,
-                parsed_content=parsed_data,
-                status=PaperStatus.PARSED
-            )
+        heading_lower = heading.lower()
+        
+        # 定义 section 类型和对应的上下文提示
+        section_hints = {
+            # 摘要类
+            ("abstract",): "This section provides a high-level summary of the paper's contributions and findings.",
             
-            if paper:
-                logger.info(f"Updated paper parsed content: {paper_id}")
-            else:
-                logger.warning(f"Paper not found for metadata update: {paper_id}")
+            # 引言类
+            ("introduction", "intro"): "This section introduces the problem, motivation, and overview of the approach.",
             
-        except Exception as e:
-            logger.error(f"Failed to save metadata: {str(e)}")
-            # 不抛出异常，因为主要逻辑（图谱摄入）已完成
+            # 相关工作类
+            ("related work", "background", "literature", "prior work", "previous work"): 
+                "This section discusses existing methods and compares them to the proposed approach.",
+            
+            # 方法类
+            ("method", "approach", "methodology", "proposed", "framework", "architecture", "model", "algorithm"):
+                "This section describes the proposed method, model, or algorithm in detail.",
+            
+            # 实验类
+            ("experiment", "evaluation", "result", "empirical", "analysis"):
+                "This section presents experimental setup, results, and analysis.",
+            
+            # 讨论类
+            ("discussion", "limitation", "future work", "conclusion"):
+                "This section discusses findings, limitations, and future directions.",
+            
+            # 实现类
+            ("implementation", "setup", "configuration", "training"):
+                "This section describes implementation details and experimental setup.",
+        }
+        
+        # 匹配 section 类型
+        for keywords, hint in section_hints.items():
+            if any(kw in heading_lower for kw in keywords):
+                return f"Context: {hint}"
+        
+        # 默认提示
+        return "Context: General content from the paper."
 
-    async def get_paper_detail(
-        self, 
+    async def add_paper_to_graph(
+        self,
         paper_id: str,
-        user_id: str,
-        group_id: Optional[str] = None
+        user_id: str
     ) -> Dict:
         """
-        获取论文详情
+        将已解析的论文添加到知识图谱
         
-        包含：
-        1. MySQL中的元数据
-        2. 图谱中的实体和关系
-        3. 相关论文推荐
+        这是用户触发的操作，流程：
+        1. 从数据库获取论文信息（必须已解析）
+        2. 使用 LLM 分析 abstract 识别 domains
+        3. 为每个 domain 构建 group_id 并添加到图谱
+        4. 更新数据库状态
         
         Args:
             paper_id: 论文ID
             user_id: 用户ID
-            group_id: 命名空间
             
         Returns:
-            论文详情字典
+            包含 domains, episodes_added, status 等信息的字典
+            
+        Raises:
+            HTTPException: 论文不存在或未解析
         """
-        if not group_id:
-            group_id = f"user:{user_id}"
+        from app.services.domain_analyzer import DomainAnalyzer
+        from app.utils.group_id import get_paper_ingest_group_ids
+        from app.utils.entity_types import build_entity_types_for_domain, get_edge_types
         
-        # Step 1: 从MySQL获取论文信息
-        paper = None
-        if self.paper_repo:
-            paper = await self.paper_repo.get_by_id(paper_id)
+        # Step 1: 获取论文信息
+        if not self.paper_repo:
+            raise HTTPException(status_code=500, detail="Paper repository not available")
+        
+        paper = await self.paper_repo.get_by_id(paper_id)
         
         if not paper:
             raise HTTPException(status_code=404, detail="Paper not found")
         
-        # 从parsed_content中提取元数据
-        parsed_content = paper.parsed_content or {}
-        title = parsed_content.get('title', paper.filename)
+        if paper.user_id != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
         
-        # Step 2: 从图谱获取相关实体
-        try:
-            # 搜索与论文相关的节点
-            search_results = await self.graph.search(
-                query=title,
-                group_id=group_id,
-                limit=20
-            )
-            
-            # 提取实体
-            entities = self._extract_entities_from_search(search_results)
-            
-            # Step 3: 推荐相关论文（基于图谱搜索）
-            related_papers = await self._find_related_papers(
-                paper_id=paper_id,
-                group_id=group_id,
-                limit=5
-            )
-            
-            return {
-                "paper_id": paper_id,
-                "title": title,
-                "authors": parsed_content.get('authors', []),
-                "abstract": parsed_content.get('abstract', ''),
-                "year": parsed_content.get('metadata', {}).get('publication_year'),
-                "venue": parsed_content.get('metadata', {}).get('conference'),
-                "filename": paper.filename,
-                "domain": paper.domain,
-                "status": paper.status.value if paper.status else None,
-                "added_to_graph": paper.added_to_graph,
-                "entities": entities,
-                "related_papers": related_papers,
-                "created_at": paper.created_at.isoformat() if paper.created_at else None
-            }
-            
-        except Exception as e:
-            logger.error(f"Failed to get paper detail: {str(e)}")
+        if paper.status != PaperStatus.PARSED:
             raise HTTPException(
-                status_code=500,
-                detail=f"Failed to retrieve paper details: {str(e)}"
+                status_code=400, 
+                detail=f"Paper must be parsed first. Current status: {paper.status}"
             )
-
-    def _extract_entities_from_search(self, search_results: list) -> list:
-        """
-        从搜索结果中提取实体信息
-        """
-        entities = []
-        for result in search_results[:10]:  # 限制返回数量
-            if hasattr(result, 'node') and result.node:
-                node = result.node
-                entities.append({
-                    "uuid": getattr(node, 'uuid', ''),
-                    "name": getattr(node, 'name', ''),
-                    "type": getattr(node, 'labels', ['Unknown'])[0] if hasattr(node, 'labels') else 'Unknown',
-                    "summary": getattr(node, 'summary', '')
-                })
-        return entities
-
-    async def _find_related_papers(
-        self, 
-        paper_id: str, 
-        group_id: str, 
-        limit: int = 5
-    ) -> list:
-        """
-        基于图谱查找相关论文
-        """
+        
+        if paper.added_to_graph:
+            raise HTTPException(
+                status_code=400, 
+                detail="Paper already added to graph"
+            )
+        
+        # Step 2: 获取解析内容
+        parsed_content = paper.parsed_content
+        if not parsed_content:
+            raise HTTPException(status_code=400, detail="Paper has no parsed content")
+        
+        abstract = parsed_content.get('abstract', '')
+        title = parsed_content.get('title', paper.filename)
+        sections = parsed_content.get('sections', [])
+        
+        if not abstract and not sections:
+            raise HTTPException(status_code=400, detail="Paper has no content to add")
+        
+        # Step 3: 使用 LLM 分析 domains
+        logger.info(f"Analyzing domains for paper: {paper_id}")
+        domain_analyzer = DomainAnalyzer()
+        domains = await domain_analyzer.analyze_domains(abstract, title)
+        
+        logger.info(f"Identified domains: {domains}")
+        
+        # Step 4: 添加到公共领域图谱
+        # 所有论文进入公共图谱（domain:{domain}），实现知识共享
+        all_episode_ids = []
+        group_ids = get_paper_ingest_group_ids(domains)
+        
+        logger.info(f"Adding paper to public graph: group_ids={group_ids}")
+        
+        for group_id in group_ids:
+            domain = group_id.replace("domain:", "").upper()
+            
+            # 构建实体类型
+            entity_types = build_entity_types_for_domain(domain)
+            edge_types = get_edge_types()
+            
+            # 添加每个 section
+            for idx, section in enumerate(sections):
+                try:
+                    episode_content = self._build_episode_content(
+                        paper_id=paper_id,
+                        title=title,
+                        section=section,
+                        section_idx=idx,
+                        domain=domain
+                    )
+                    
+                    result = await self.graph.add_episode(
+                        episode_body=episode_content,
+                        user_id=user_id,  # 记录上传者，但数据进入公共图谱
+                        group_id=group_id,
+                        name=f"{paper_id}_{domain}_section_{idx+1}",
+                        source=EpisodeType.text,
+                        source_description=f"[{domain}] {title}",
+                        reference_time=datetime.utcnow(),
+                        entity_types=entity_types,
+                        edge_types=edge_types,
+                        timeout=300.0
+                    )
+                    
+                    if result:
+                        all_episode_ids.append(str(result) if result else f"{paper_id}_{domain}_{idx}")
+                        
+                except Exception as e:
+                    logger.error(f"Failed to add section {idx} for domain {domain}: {e}")
+                    # 继续处理其他 section
+        
+        # Step 5: 更新数据库状态
         try:
-            # 使用论文ID作为查询，找到相关节点
-            results = await self.graph.search(
-                query=paper_id,
-                group_id=group_id,
-                limit=limit * 2  # 多拿一些，过滤后再返回
-            )
+            paper.added_to_graph = True
+            paper.domains = domains
+            paper.graph_episode_ids = all_episode_ids
+            paper.added_to_graph_at = datetime.utcnow()
             
-            related = []
-            for result in results:
-                if hasattr(result, 'node') and result.node:
-                    node = result.node
-                    # 如果是Paper类型的节点
-                    if 'Paper' in getattr(node, 'labels', []):
-                        related.append({
-                            "paper_id": getattr(node, 'uuid', ''),
-                            "title": getattr(node, 'name', ''),
-                            "relevance_score": getattr(result, 'score', 0.0)
-                        })
+            await self.paper_repo.update(paper)
             
-            return related[:limit]
+            logger.info(f"✅ Paper {paper_id} added to graph with domains: {domains}")
             
         except Exception as e:
-            logger.warning(f"Failed to find related papers: {str(e)}")
-            return []
+            logger.error(f"Failed to update paper status: {e}")
+        
+        return {
+            "paper_id": paper_id,
+            "title": title,
+            "domains": domains,
+            "sections_count": len(sections),
+            "episodes_added": len(all_episode_ids),
+            "added_to_graph": True,
+            "status": "success"
+        }

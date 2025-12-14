@@ -225,7 +225,7 @@ class Paper(Base):
     filename = Column(String(255), nullable=False, comment="原始文件名")
     file_path = Column(String(500), nullable=False, comment="磁盘存储路径")
     file_size = Column(BigInteger, nullable=False, comment="文件大小（字节）")
-    domain = Column(String(50), nullable=True, comment="论文领域")
+    domains = Column(JSON, nullable=True, comment="论文领域列表，如['AI','NLP']，由LLM分析abstract自动识别")
     
     # 解析状态
     status = Column(
@@ -263,10 +263,10 @@ class Paper(Base):
     user = relationship("User", back_populates="papers")
     
     # 索引
+    # 注意：domains 是 JSON 类型，不支持普通索引
     __table_args__ = (
         Index('idx_papers_user_id', 'user_id'),
         Index('idx_papers_status', 'status'),
-        Index('idx_papers_domain', 'domain'),
         Index('idx_papers_added_to_graph', 'added_to_graph'),
         Index('idx_papers_created_at', 'created_at'),
         Index('idx_papers_user_status', 'user_id', 'status'),

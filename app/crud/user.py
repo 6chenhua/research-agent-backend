@@ -136,3 +136,77 @@ class UserRepository(BaseRepository[User]):
         """
         user = await self.get_by_username(username)
         return user is not None
+    
+    async def get_preferences(self, user_id: str) -> Optional[dict]:
+        """
+        获取用户偏好设置
+        
+        Args:
+            user_id: 用户ID
+            
+        Returns:
+            偏好设置字典，如果用户不存在返回 None
+        """
+        user = await self.get_by_id(user_id)
+        if not user:
+            return None
+        return user.preferences or {}
+    
+    async def update_preferences(
+        self, 
+        user_id: str, 
+        preferences: dict,
+        merge: bool = True
+    ) -> Optional[User]:
+        """
+        更新用户偏好设置
+        
+        Args:
+            user_id: 用户ID
+            preferences: 偏好设置字典
+            merge: 是否合并现有设置（True）或完全替换（False）
+            
+        Returns:
+            更新后的用户对象，如果用户不存在返回 None
+        """
+        user = await self.get_by_id(user_id)
+        if not user:
+            return None
+        
+        if merge and user.preferences:
+            # 合并现有设置
+            merged = user.preferences.copy()
+            merged.update(preferences)
+            user.preferences = merged
+        else:
+            # 完全替换
+            user.preferences = preferences
+        
+        return await self.update(user)
+    
+    async def update_profile_field(
+        self,
+        user_id: str,
+        field: str,
+        value
+    ) -> Optional[User]:
+        """
+        更新用户画像的单个字段
+        
+        Args:
+            user_id: 用户ID
+            field: 字段名（如 'research_interests', 'expertise_level'）
+            value: 字段值
+            
+        Returns:
+            更新后的用户对象
+        """
+        user = await self.get_by_id(user_id)
+        if not user:
+            return None
+        
+        preferences = user.preferences or {}
+        preferences[field] = value
+        user.preferences = preferences
+        
+        return await self.update(user)

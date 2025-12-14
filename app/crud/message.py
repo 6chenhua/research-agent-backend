@@ -26,6 +26,21 @@ class MessageRepository(BaseRepository[ChatMessage]):
     def __init__(self, session: AsyncSession):
         super().__init__(session, ChatMessage)
     
+    async def get_by_id(self, message_id: str) -> Optional[ChatMessage]:
+        """
+        根据ID查询消息
+        
+        Args:
+            message_id: 消息ID
+            
+        Returns:
+            消息对象或 None
+        """
+        result = await self.session.execute(
+            select(ChatMessage).where(ChatMessage.id == message_id)
+        )
+        return result.scalar_one_or_none()
+    
     async def create_message(
         self,
         message_id: str,

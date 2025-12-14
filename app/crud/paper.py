@@ -179,3 +179,21 @@ class PaperRepository(BaseRepository[Paper]):
             await self.session.flush()
             
         return paper
+    
+    async def find_by_title(self, title: str) -> Optional[Paper]:
+        """通过论文标题查找（用于去重检测）"""
+        from sqlalchemy import func
+        
+        query = (
+            select(Paper)
+            .where(
+                Paper.status == PaperStatus.PARSED,
+                func.json_unquote(
+                    func.json_extract(Paper.parsed_content, '$.title')
+                ) == title
+            )
+            .limit(1)
+        )
+        
+        result = await self.session.execute(query)
+        return result.scalar_one_or_none()

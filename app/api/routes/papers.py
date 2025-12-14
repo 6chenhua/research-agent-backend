@@ -1,20 +1,27 @@
 """
-Paper ingestion API router.
-Handles uploading, parsing, and ingestion of research papers.
+Paper API router.
+Handles uploading and management of research papers.
 
 API端点：
-- POST /api/papers/upload - 上传论文PDF
-- GET /api/papers/{paper_id} - 获取论文详情
-"""
-from fastapi import APIRouter, UploadFile, Depends, HTTPException, File
-from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Optional
+- POST /api/papers/upload - 上传论文PDF（只上传，不解析）
+- POST /api/papers/{paper_id}/add-to-graph - 将论文添加到图谱
 
-from app.services.ingest_service import IngestService
+注意：
+- 上传时只保存文件到磁盘并记录到数据库
+- 解析在用户发送消息时按需进行（_generate_paper_context）
+- 添加到图谱是用户主动触发的操作
+"""
+import logging
+
+from fastapi import APIRouter, UploadFile, Depends, HTTPException, File
+
 from app.api.dependencies.auth import get_current_user
-from app.core.database import get_session
-from app.schemas.paper import PaperUploadResponse, PaperDetailResponse
+from app.api.dependencies.services import get_ingest_service
+from app.schemas.paper import PaperUploadResponse
 from app.models.db_models import User
+from app.services.ingest_service import IngestService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Papers"])
 
@@ -24,14 +31,16 @@ router = APIRouter(tags=["Papers"])
     response_model=PaperUploadResponse,
     summary="Upload Research Paper (PDF)",
     description="""
-    Upload a PDF research paper for ingestion into knowledge graph.
+    Upload a PDF research paper.
     
-    Process:
-    1. Parse PDF using deepdoc
-    2. Extract metadata, sections, references
-    3. Add sections as Episodes to Graphiti
-    4. Graphiti automatically extracts entities and relationships
-    5. Save metadata to database
+    This endpoint ONLY:
+    1. Validates the file (format, size)
+    2. Saves the file to disk
+    3. Creates a database record with status='uploaded'
+    
+    PDF parsing happens later when:
+    - User sends a message with attached papers
+    - User triggers 'add-to-graph'
     
     Limits:
     - File size: < 50MB
@@ -41,43 +50,31 @@ router = APIRouter(tags=["Papers"])
 async def upload_paper(
     file: UploadFile = File(..., description="PDF file to upload"),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_session)
+    ingest_service: IngestService = Depends(get_ingest_service)
 ):
     """
-    Upload and ingest a PDF for graph construction.
+    Upload a PDF file (no parsing).
 
     Args:
         file: PDF document
         current_user: Current authenticated user
-        db: Database session
+        ingest_service: 论文摄入服务
 
     Returns:
-        PaperUploadResponse with paper_id, title, status, etc.
+        PaperUploadResponse with paper_id, filename, status
     
     Raises:
         400: Invalid file format or size
-        500: Ingestion failed
+        500: Upload failed
     """
-    import logging
-    logger = logging.getLogger(__name__)
-    
     try:
-        logger.info(f"📄 Uploading paper: {file.filename} for user: {current_user.user_id}")
-        
-        # 创建摄入服务
-        ingest_service = IngestService(db=db)
-        
-        # 摄入PDF
-        result = await ingest_service.ingest_pdf(
+        result = await ingest_service.upload_paper(
             file=file,
             user_id=current_user.user_id
         )
-        
-        logger.info(f"✅ Paper uploaded successfully: {result.get('paper_id')}")
         return result
         
     except HTTPException:
-        # 重新抛出HTTPException
         raise
     except Exception as e:
         logger.error(f"❌ Upload failed: {str(e)}", exc_info=True)
@@ -85,48 +82,3 @@ async def upload_paper(
             status_code=500,
             detail=f"Failed to upload paper: {str(e)}"
         )
-
-
-@router.get(
-    "/{paper_id}",
-    response_model=PaperDetailResponse,
-    summary="Get Paper Details",
-    description="""
-    Retrieve complete information about a paper.
-    
-    Includes:
-    - Metadata (title, authors, abstract, etc.)
-    - Extracted entities from knowledge graph
-    - Related papers recommendations
-    """
-)
-async def get_paper_detail(
-    paper_id: str,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_session)
-):
-    """
-    Get detailed information about a specific paper.
-
-    Args:
-        paper_id: Paper ID
-        current_user: Current authenticated user
-        db: Database session
-
-    Returns:
-        PaperDetailResponse with full paper information
-    
-    Raises:
-        404: Paper not found
-        500: Failed to retrieve details
-    """
-    # 创建摄入服务
-    ingest_service = IngestService(db=db)
-    
-    # 获取论文详情
-    paper_detail = await ingest_service.get_paper_detail(
-        paper_id=paper_id,
-        user_id=current_user.user_id
-    )
-    
-    return paper_detail

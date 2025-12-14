@@ -17,27 +17,21 @@ class PaperMetadata(BaseModel):
 
 
 class PaperUploadResponse(BaseModel):
-    """论文上传响应"""
+    """论文上传响应（只上传，不解析）"""
     paper_id: str = Field(..., description="论文ID")
-    title: str = Field(..., description="论文标题")
-    authors: List[str] = Field(default=[], description="作者列表")
-    year: Optional[int] = Field(None, description="发表年份")
-    sections_count: int = Field(..., description="章节数量")
-    episodes_added: int = Field(..., description="添加的Episode数量")
-    status: str = Field(..., description="处理状态")
-    group_id: str = Field(..., description="图谱命名空间ID")
+    filename: str = Field(..., description="原始文件名")
+    file_size: int = Field(..., description="文件大小（字节）")
+    status: str = Field(..., description="处理状态（uploaded）")
+    message: Optional[str] = Field(None, description="提示信息")
     
     class Config:
         json_schema_extra = {
             "example": {
                 "paper_id": "paper_abc123def456",
-                "title": "Attention Is All You Need",
-                "authors": ["Vaswani, Ashish", "Shazeer, Noam"],
-                "year": 2017,
-                "sections_count": 8,
-                "episodes_added": 8,
-                "status": "success",
-                "group_id": "user:u_1234567890"
+                "filename": "attention_is_all_you_need.pdf",
+                "file_size": 1234567,
+                "status": "uploaded",
+                "message": "Paper uploaded successfully. It will be parsed when used in chat."
             }
         }
 
