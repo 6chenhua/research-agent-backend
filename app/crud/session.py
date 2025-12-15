@@ -180,6 +180,24 @@ class SessionRepository(BaseRepository[ResearchSession]):
             
         return research_session
     
+    async def count_by_user(self, user_id: str) -> int:
+        """
+        统计用户的会话数量
+        
+        Args:
+            user_id: 用户ID
+            
+        Returns:
+            会话数量
+        """
+        query = (
+            select(func.count())
+            .select_from(ResearchSession)
+            .where(ResearchSession.user_id == user_id)
+        )
+        result = await self.session.execute(query)
+        return result.scalar() or 0
+    
     @staticmethod
     def parse_domains(domains: Any) -> List[str]:
         """

@@ -19,6 +19,7 @@ from app.services.chat_service import ChatService
 from app.services.ingest_service import IngestService
 from app.services.profile_service import ProfileService
 from app.services.note_service import NoteService
+from app.services.user_service import UserService
 
 
 # ==================== Repository 工厂函数 ====================
@@ -100,6 +101,16 @@ async def get_research_service(
     return ResearchService(session_repo)
 
 
+async def get_profile_service(
+    session: AsyncSession = Depends(get_session)
+) -> ProfileService:
+    """
+    获取用户画像服务实例
+    """
+    return ProfileService(session)
+
+
+
 async def get_chat_service(
     session_repo: SessionRepository = Depends(get_session_repository),
     message_repo: MessageRepository = Depends(get_message_repository),
@@ -121,15 +132,6 @@ async def get_ingest_service(
     return IngestService(paper_repo)
 
 
-async def get_profile_service(
-    session: AsyncSession = Depends(get_session)
-) -> ProfileService:
-    """
-    获取用户画像服务实例
-    """
-    return ProfileService(session)
-
-
 async def get_note_service(
     message_repo: MessageRepository = Depends(get_message_repository),
     session_repo: SessionRepository = Depends(get_session_repository)
@@ -138,3 +140,24 @@ async def get_note_service(
     获取笔记服务实例
     """
     return NoteService(message_repo, session_repo)
+
+
+async def get_user_service(
+    user_repo: UserRepository = Depends(get_user_repository),
+    session_repo: SessionRepository = Depends(get_session_repository),
+    message_repo: MessageRepository = Depends(get_message_repository),
+    paper_repo: PaperRepository = Depends(get_paper_repository)
+) -> UserService:
+    """
+    获取用户服务实例
+    
+    使用示例:
+    ```python
+    @router.get("/profile")
+    async def get_profile(
+        user_service: UserService = Depends(get_user_service)
+    ):
+        return await user_service.get_profile(...)
+    ```
+    """
+    return UserService(user_repo, session_repo, message_repo, paper_repo)

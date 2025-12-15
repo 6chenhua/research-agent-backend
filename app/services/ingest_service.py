@@ -2,10 +2,10 @@
 论文摄入服务
 负责解析PDF论文并将内容添加到知识图谱
 
-使用 Domain 前缀实体类型方案：
-- 摄入时根据论文的 domain 生成带前缀的 entity_types
-- 例如 AI 论文会生成 AI_Concept, AI_Method 等实体类型
-- 搜索时可通过 SearchFilters 按 domain 过滤
+使用统一的实体类型和关系类型：
+- 实体类型：Paper, Method, Dataset, Task, Metric, Author, Institution, Concept
+- 关系类型：PROPOSES, EVALUATES_ON, SOLVES, IMPROVES_OVER, CITES, 等
+- 直接使用 entities.py 和 relations.py 中的规范定义
 """
 import logging
 import uuid
@@ -18,7 +18,7 @@ from app.core.graphiti_enhanced import enhanced_graphiti
 from app.services.pdf_parser import PDFParser
 from app.crud.paper import PaperRepository
 from graphiti_core.nodes import EpisodeType
-from app.utils.entity_types import normalize_domain
+from app.utils.entity_types import get_entity_types, get_relation_types
 from app.core.config import settings
 from app.models.db_models import Paper, PaperStatus
 
@@ -246,7 +246,8 @@ Section: {heading}
         1. 从数据库获取论文信息（必须已解析）
         2. 使用 LLM 分析 abstract 识别 domains
         3. 为每个 domain 构建 group_id 并添加到图谱
-        4. 更新数据库状态
+        4. 使用统一的实体类型和关系类型
+        5. 更新数据库状态
         
         Args:
             paper_id: 论文ID
@@ -260,7 +261,6 @@ Section: {heading}
         """
         from app.services.domain_analyzer import DomainAnalyzer
         from app.utils.group_id import get_paper_ingest_group_ids
-        from app.utils.entity_types import build_entity_types_for_domain, get_edge_types
         
         # Step 1: 获取论文信息
         if not self.paper_repo:
@@ -305,7 +305,12 @@ Section: {heading}
         
         logger.info(f"Identified domains: {domains}")
         
-        # Step 4: 添加到公共领域图谱
+        # Step 4: 获取统一的实体类型和关系类型
+        # 直接使用 entities.py 和 relations.py 中的规范定义
+        entity_types = get_entity_types()
+        relation_types = get_relation_types()
+        
+        # Step 5: 添加到公共领域图谱
         # 所有论文进入公共图谱（domain:{domain}），实现知识共享
         all_episode_ids = []
         group_ids = get_paper_ingest_group_ids(domains)
@@ -314,10 +319,6 @@ Section: {heading}
         
         for group_id in group_ids:
             domain = group_id.replace("domain:", "").upper()
-            
-            # 构建实体类型
-            entity_types = build_entity_types_for_domain(domain)
-            edge_types = get_edge_types()
             
             # 添加每个 section
             for idx, section in enumerate(sections):
@@ -339,7 +340,7 @@ Section: {heading}
                         source_description=f"[{domain}] {title}",
                         reference_time=datetime.utcnow(),
                         entity_types=entity_types,
-                        edge_types=edge_types,
+                        edge_types=relation_types,
                         timeout=300.0
                     )
                     
@@ -350,7 +351,7 @@ Section: {heading}
                     logger.error(f"Failed to add section {idx} for domain {domain}: {e}")
                     # 继续处理其他 section
         
-        # Step 5: 更新数据库状态
+        # Step 6: 更新数据库状态
         try:
             paper.added_to_graph = True
             paper.domains = domains

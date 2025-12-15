@@ -27,9 +27,8 @@ from app.schemas.graph import (
 from app.services.graph_service import GraphService
 from app.api.dependencies.auth import get_current_user
 from app.models.db_models import User
-import logging
+from app.core.logging import logger
 
-logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/graph", tags=["图谱模块"])
 
 

@@ -8,3 +8,4 @@ temp/
 graphiti_quick_start.py
 .idea/
 __pycache__/
+*.pyc

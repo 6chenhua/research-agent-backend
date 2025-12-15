@@ -36,7 +36,7 @@ from app.schemas.chat import (
 
 # 论文相关
 from app.schemas.paper import (
-    PaperMetadata,
+    PaperUploadResponse,
 )
 
 # 用户相关
@@ -48,12 +48,6 @@ from app.schemas.user import (
     UpdateProfileRequest,
     UserProfileResponse,
     UpdateProfileResponse,
-)
-
-# 历史相关
-from app.schemas.history import (
-    ChatMessage,
-    ChatHistory,
 )
 
 # 图谱相关 (PRD_图谱模块.md)
@@ -82,6 +76,11 @@ from app.schemas.entities import (
 
 from app.schemas.relations import (
     RelationType,
+)
+
+from app.schemas.notes import (
+    AddToNotesResponse,
+    AddToNotesRequest,
 )
 
 __all__ = [
@@ -113,7 +112,7 @@ __all__ = [
     "SearchResultItem",
     
     # Paper
-    "PaperMetadata",
+    "PaperUploadResponse",
     
     # User
     "GraphStats",
@@ -123,10 +122,6 @@ __all__ = [
     "UpdateProfileRequest",
     "UserProfileResponse",
     "UpdateProfileResponse",
-    
-    # History
-    "ChatMessage",
-    "ChatHistory",
     
     # Graph (PRD_图谱模块.md)
     "GraphNode",
@@ -150,4 +145,8 @@ __all__ = [
     
     # Relations
     "RelationType",
+
+    # Notes
+    "AddToNotesResponse",
+    "AddToNotesRequest",
 ]

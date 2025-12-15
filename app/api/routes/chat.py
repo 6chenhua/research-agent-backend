@@ -3,10 +3,7 @@
 根据PRD_研究与聊天模块.md设计
 提供消息发送、历史记录查询、添加笔记等接口
 """
-import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
-from typing import Optional
 
 from app.api.dependencies.auth import get_current_user
 from app.api.dependencies.services import get_chat_service, get_note_service
@@ -18,9 +15,9 @@ from app.schemas.chat import (
     ChatHistoryResponse,
     ErrorResponse
 )
+from app.schemas.notes import AddToNotesResponse, AddToNotesRequest
 from app.models.db_models import User
-
-logger = logging.getLogger(__name__)
+from app.core.logging import logger
 
 router = APIRouter(prefix="/chat", tags=["聊天"])
 
@@ -168,18 +165,6 @@ async def get_chat_history(
 
 
 # ==================== 私有笔记图谱 ====================
-
-class AddToNotesRequest(BaseModel):
-    """添加到笔记的请求"""
-    note: Optional[str] = None
-
-
-class AddToNotesResponse(BaseModel):
-    """添加到笔记的响应"""
-    message_id: str
-    status: str
-    episode_name: str
-
 
 @router.post(
     "/messages/{message_id}/add-to-notes",

@@ -149,6 +149,27 @@ class MessageRepository(BaseRepository[ChatMessage]):
         # 按时间正序排列
         return list(reversed(list(messages)))
     
+    async def count_by_user(self, user_id: str) -> int:
+        """
+        统计用户的消息数量（通过关联会话）
+        
+        Args:
+            user_id: 用户ID
+            
+        Returns:
+            消息数量
+        """
+        from app.models.db_models import ResearchSession
+        
+        query = (
+            select(func.count())
+            .select_from(ChatMessage)
+            .join(ResearchSession, ChatMessage.session_id == ResearchSession.id)
+            .where(ResearchSession.user_id == user_id)
+        )
+        result = await self.session.execute(query)
+        return result.scalar() or 0
+    
     @staticmethod
     def format_message(msg: ChatMessage) -> Dict[str, Any]:
         """

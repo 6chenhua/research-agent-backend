@@ -11,8 +11,7 @@ from graphiti_core import Graphiti
 from graphiti_core.llm_client.openai_client import OpenAIClient, LLMConfig
 from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
 from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
-from graphiti_core.nodes import EpisodeType, EntityNode
-from pydantic import BaseModel
+from graphiti_core.nodes import EpisodeType
 
 from app.core.config import settings
 import logging
@@ -122,7 +121,7 @@ class EnhancedGraphitiSingleton:
         self,
         query: str,
         user_id: str,
-        group_ids: Optional[List[str]] = None,
+        group_id: Optional[str] = None,
         timeout: Optional[float] = None,
         limit: int = 10,
         **kwargs
@@ -132,7 +131,7 @@ class EnhancedGraphitiSingleton:
         Args:
             query: 搜索查询字符串
             user_id: 用户ID（用于并发控制和监控）
-            group_ids: 命名空间ID列表（如：["user:123:domain:ai", "global:domain:ai"]）
+            group_id: 命名空间ID（如：user:123, global）
             timeout: 超时时间（秒），None 使用默认值
             limit: 返回结果数量
             **kwargs: 其他传递给 Graphiti.search 的参数
@@ -163,7 +162,7 @@ class EnhancedGraphitiSingleton:
                 result = await asyncio.wait_for(
                     self.client.search(
                         query,
-                        group_ids=group_ids,
+                        group_ids=[group_id] if group_id else None,
                         **kwargs
                     ),
                     timeout=timeout
@@ -182,8 +181,7 @@ class EnhancedGraphitiSingleton:
                 else:
                     logger.debug(
                         f"✅ Search completed: {duration:.2f}s | "
-                        f"user={user_id} | results={len(result)} | "
-                        f"group_ids={group_ids}"
+                        f"user={user_id} | results={len(result)}"
                     )
                 
                 self._metrics["successful_requests"] += 1
@@ -219,9 +217,6 @@ class EnhancedGraphitiSingleton:
         source_description: Optional[str] = None,
         reference_time: Optional[datetime] = None,
         timeout: Optional[float] = None,
-        entity_types: Optional[Dict[str, type]] = None,
-        edge_types: Optional[Dict[str, type]] = None,
-        edge_type_map: Optional[Dict[tuple, List[str]]] = None,
         **kwargs
     ):
         """增强的添加 Episode 方法
@@ -241,9 +236,6 @@ class EnhancedGraphitiSingleton:
             source_description: 来源描述（可选）
             reference_time: 参考时间（可选，默认当前UTC时间）
             timeout: 超时时间（秒），None 使用默认值
-            entity_types: 自定义实体类型字典，如 {"AI_Concept": ResearchConcept}
-            edge_types: 自定义边类型字典，如 {"Uses": Uses}
-            edge_type_map: 边类型映射，如 {("Concept", "Method"): ["Uses"]}
             **kwargs: 其他传递给 Graphiti.add_episode 的参数
             
         Returns:
@@ -254,14 +246,24 @@ class EnhancedGraphitiSingleton:
             Exception: 其他错误
             
         Examples:
-            # 带自定义实体类型的论文摄入
-            from app.utils.entity_types import build_entity_types_for_domain, get_edge_types
-            
+            # 文本内容（论文、文档）
             await add_episode(
                 episode_body="This is research paper content...",
                 source=EpisodeType.text,
-                entity_types=build_entity_types_for_domain("AI"),
-                edge_types=get_edge_types(),
+                ...
+            )
+            
+            # 聊天消息
+            await add_episode(
+                episode_body="User: Hello!\nAssistant: Hi there!",
+                source=EpisodeType.message,
+                ...
+            )
+            
+            # JSON数据
+            await add_episode(
+                episode_body=json.dumps({"key": "value"}),
+                source=EpisodeType.json,
                 ...
             )
         """
@@ -281,30 +283,15 @@ class EnhancedGraphitiSingleton:
             start_time = time.time()
             
             try:
-                # 构建参数
-                episode_kwargs = {
-                    "name": name or f"episode_{group_id}_{int(start_time)}",
-                    "episode_body": episode_body,
-                    "source": source,
-                    "source_description": source_description,
-                    "reference_time": reference_time,
-                    "group_id": group_id,
-                    "update_communities": True,
-                }
-                
-                # 添加自定义类型（如果提供）
-                if entity_types:
-                    episode_kwargs["entity_types"] = entity_types
-                if edge_types:
-                    episode_kwargs["edge_types"] = edge_types
-                if edge_type_map:
-                    episode_kwargs["edge_type_map"] = edge_type_map
-                
-                # 合并其他参数
-                episode_kwargs.update(kwargs)
-                
                 result = await asyncio.wait_for(
-                    self.client.add_episode(**episode_kwargs),
+                    self.client.add_episode(
+                        name=name or f"episode_{group_id}_{int(start_time)}",
+                        episode_body=episode_body,
+                        source=source,  # ← 使用传入的source类型
+                        source_description=source_description,
+                        reference_time=reference_time,
+                        **kwargs
+                    ),
                     timeout=timeout
                 )
                 
@@ -313,8 +300,7 @@ class EnhancedGraphitiSingleton:
                 logger.info(
                     f"✅ Episode added: {duration:.2f}s | "
                     f"user={user_id} | content_length={len(episode_body)} | "
-                    f"group_id={group_id} | "
-                    f"entity_types={list(entity_types.keys()) if entity_types else 'default'}"
+                    f"group_id={group_id}"
                 )
                 
                 return result
@@ -336,45 +322,32 @@ class EnhancedGraphitiSingleton:
     async def get_node(self, uuid: str) -> Dict[str, Any]:
         """获取节点（无并发限制，因为是简单查询）
         
-        使用 EntityNode.get_by_uuid 类方法获取节点，
-        这是 Graphiti 官方推荐的方式。
-        
         Args:
             uuid: 节点UUID
             
         Returns:
-            节点信息字典，包含 uuid, name, labels, created_at, summary 等字段
+            节点信息字典
         """
         if not self._initialized:
             raise RuntimeError("Graphiti client not initialized")
         
         try:
-            # 使用 EntityNode 类方法获取节点
-            # 需要传入 driver（从 Graphiti 客户端获取）
-            node = await EntityNode.get_by_uuid(self.client.driver, uuid)
-            
-            if node:
-                # 将 EntityNode 对象转换为字典
-                return {
-                    "uuid": node.uuid,
-                    "name": node.name,
-                    "labels": node.labels,
-                    "created_at": node.created_at.isoformat() if node.created_at else None,
-                    "summary": node.summary,
-                }
-            return {}
+            node = await self.client.get_node(uuid)
+            return node if node else {}
         except Exception as e:
             logger.error(f"❌ Get node error: {str(e)} | uuid={uuid}")
             raise
     
     async def build_communities(
         self,
-        group_ids: Optional[List[str]] = None
+        group_id: Optional[str] = None,
+        update_communities: bool = True
     ):
         """构建社区（重量级操作，添加日志）
         
         Args:
-            group_ids: 命名空间ID列表（可选，部分版本的graphiti可能不支持）
+            group_id: 命名空间ID
+            update_communities: 是否更新现有社区
             
         Returns:
             社区构建结果
@@ -385,24 +358,18 @@ class EnhancedGraphitiSingleton:
         start_time = time.time()
         
         try:
-            logger.info(f"🔨 Building communities | group_ids={group_ids}")
+            logger.info(f"🔨 Building communities | group_id={group_id}")
             
-            # graphiti-core不同版本的API可能不同，尝试兼容
-            try:
-                if group_ids:
-                    result = await self.client.build_communities(group_ids=group_ids)
-                else:
-                    result = await self.client.build_communities()
-            except TypeError as te:
-                # 如果group_ids参数不被支持，使用无参数调用
-                logger.warning(f"build_communities不支持group_ids参数，使用默认调用: {te}")
-                result = await self.client.build_communities()
+            result = await self.client.build_communities(
+                group_id=group_id,
+                update_communities=update_communities
+            )
             
             duration = time.time() - start_time
             
             logger.info(
                 f"✅ Communities built: {duration:.2f}s | "
-                f"group_ids={group_ids}"
+                f"group_id={group_id}"
             )
             
             return result
@@ -410,10 +377,9 @@ class EnhancedGraphitiSingleton:
         except Exception as e:
             logger.error(
                 f"❌ Build communities error: {str(e)} | "
-                f"group_ids={group_ids}"
+                f"group_id={group_id}"
             )
-            # 社区构建失败不应该阻塞主流程，记录错误但不抛出
-            return None
+            raise
     
     def get_metrics(self) -> Dict[str, Any]:
         """获取监控指标

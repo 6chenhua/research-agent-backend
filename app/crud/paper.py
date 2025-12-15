@@ -3,8 +3,8 @@
 处理 papers 表的所有数据库操作
 """
 from datetime import datetime
-from typing import Optional, List, Dict, Any
-from sqlalchemy import select
+from typing import Optional, List, Dict, Any, NamedTuple
+from sqlalchemy import select, func, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db_models import Paper, PaperStatus
@@ -182,8 +182,6 @@ class PaperRepository(BaseRepository[Paper]):
     
     async def find_by_title(self, title: str) -> Optional[Paper]:
         """通过论文标题查找（用于去重检测）"""
-        from sqlalchemy import func
-        
         query = (
             select(Paper)
             .where(
@@ -197,3 +195,35 @@ class PaperRepository(BaseRepository[Paper]):
         
         result = await self.session.execute(query)
         return result.scalar_one_or_none()
+    
+    async def get_stats_by_user(self, user_id: str) -> Dict[str, int]:
+        """
+        获取用户的论文统计数据
+        
+        Args:
+            user_id: 用户ID
+            
+        Returns:
+            统计数据字典，包含:
+            - total_uploaded: 已上传论文数量
+            - total_parsed: 已解析论文数量
+            - added_to_graph: 已添加到图谱的论文数量
+        """
+        query = select(
+            func.count(Paper.id).label("total_uploaded"),
+            func.sum(
+                case((Paper.status == PaperStatus.PARSED, 1), else_=0)
+            ).label("total_parsed"),
+            func.sum(
+                case((Paper.added_to_graph == True, 1), else_=0)
+            ).label("added_to_graph")
+        ).where(Paper.user_id == user_id)
+        
+        result = await self.session.execute(query)
+        row = result.one()
+        
+        return {
+            "total_uploaded": row.total_uploaded or 0,
+            "total_parsed": int(row.total_parsed or 0),
+            "added_to_graph": int(row.added_to_graph or 0)
+        }

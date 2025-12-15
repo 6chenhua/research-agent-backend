@@ -11,10 +11,9 @@ from app.core.graphiti_enhanced import get_enhanced_graphiti
 from app.crud.message import MessageRepository
 from app.crud.session import SessionRepository
 from app.utils.group_id import get_notes_ingest_group_id
-from app.schemas.note_entities import get_note_entity_types, get_note_edge_types
+from app.schemas.note_entities_relations import get_note_entity_types, get_note_edge_types
 from graphiti_core.nodes import EpisodeType
-
-logger = logging.getLogger(__name__)
+from app.core.logging import logger
 
 
 class NoteService:

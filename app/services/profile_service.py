@@ -11,7 +11,6 @@
 - frequently_asked_topics: 常问话题
 - interaction_stats: 交互统计
 """
-import json
 import logging
 import re
 from collections import Counter
@@ -20,10 +19,8 @@ from typing import Dict, List, Optional, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.db_models import User
 from app.crud.user import UserRepository
-
-logger = logging.getLogger(__name__)
+from app.core.logging import logger
 
 
 # ==================== 用户画像结构 ====================
@@ -394,23 +391,3 @@ Personalization Guidelines:
             context += "- User prefers detailed responses. Provide comprehensive explanations with examples.\n"
         
         return context
-
-
-# ==================== 便捷函数 ====================
-
-async def get_user_profile(session: AsyncSession, user_id: str) -> Dict[str, Any]:
-    """获取用户画像的便捷函数"""
-    service = ProfileService(session)
-    return await service.get_user_profile(user_id)
-
-
-async def update_profile_from_message(
-    session: AsyncSession,
-    user_id: str,
-    message: str,
-    session_domains: List[str]
-) -> Dict[str, Any]:
-    """更新用户画像的便捷函数"""
-    service = ProfileService(session)
-    return await service.update_from_message(user_id, message, session_domains)
-

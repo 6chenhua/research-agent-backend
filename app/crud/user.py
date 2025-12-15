@@ -70,6 +70,21 @@ class UserRepository(BaseRepository[User]):
         )
         return result.scalar_one_or_none()
     
+    async def get_by_email(self, email: str) -> Optional[User]:
+        """
+        根据邮箱查询用户
+        
+        Args:
+            email: 邮箱地址
+            
+        Returns:
+            用户对象或 None
+        """
+        result = await self.session.execute(
+            select(User).where(User.email == email)
+        )
+        return result.scalar_one_or_none()
+    
     async def create_user(
         self,
         user_id: str,
